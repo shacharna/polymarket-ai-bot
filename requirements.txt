@@ -1,0 +1,25 @@
+# Core dependencies
+python-dotenv==1.0.0
+requests==2.31.0
+
+# Polymarket integration
+py-clob-client==0.32.0
+web3==6.14.0
+
+# AI/ML
+anthropic==0.18.1
+
+# Telegram bot
+python-telegram-bot==20.7
+
+# Database
+sqlalchemy==2.0.25
+
+# Monitoring and logging
+loguru==0.7.2
+
+# Utilities
+schedule==1.2.0
+pytz==2024.1
+pydantic==2.5.3
+pydantic-settings==2.1.0

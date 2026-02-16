@@ -1,0 +1,21 @@
+[Unit]
+Description=Polymarket AI Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/polymarket-ai-bot
+Environment="PATH=/home/pi/polymarket-ai-bot/venv/bin"
+ExecStart=/home/pi/polymarket-ai-bot/venv/bin/python src/main.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
