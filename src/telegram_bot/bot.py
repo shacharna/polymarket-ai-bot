@@ -40,7 +40,8 @@ class TradingTelegramBot:
 /positions - Open stock positions
 /trades - Recent trade history
 /stats - Trading statistics
-/watchlist - Current watchlist
+/scan - AI market scan (Yahoo Finance + web)
+/watchlist - Current watchlist + AI picks
 /strategies - Active strategies
 /risk - Risk metrics & PDT status
 /mode - Trading parameters
@@ -199,13 +200,48 @@ Session P&L: ${balance.get('total_pnl', 0):+.2f}"""
             logger.error(f"Error in stats command: {e}")
             await update.message.reply_text(f"Error: {str(e)}")
 
+    async def scan_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /scan command - trigger AI market scan"""
+        try:
+            if not self.trading_engine:
+                await update.message.reply_text("Trading engine not connected")
+                return
+
+            await update.message.reply_text(
+                "Scanning market (Yahoo Finance + Alpaca + AI)...\nThis may take 30-60 seconds."
+            )
+
+            # Run scan in background
+            self.trading_engine.run_scan()
+
+            # Get results
+            summary = self.trading_engine.get_scan_summary()
+            await update.message.reply_text(summary, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error in scan command: {e}")
+            await update.message.reply_text(f"Error: {str(e)}")
+
     async def watchlist_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /watchlist command"""
         try:
+            # Show both fixed watchlist and AI-selected stocks
             symbols = self.settings.get_watchlist_symbols()
-            message = f"*Watchlist ({len(symbols)} stocks)*\n\n"
+            message = f"*Fixed Watchlist ({len(symbols)} stocks)*\n"
             message += ", ".join(symbols)
-            message += "\n\nModify WATCHLIST in .env to change"
+
+            if self.trading_engine:
+                ai_symbols = self.trading_engine.scanner.get_dynamic_watchlist()
+                if ai_symbols:
+                    # Filter out duplicates
+                    new_symbols = [s for s in ai_symbols if s not in symbols]
+                    if new_symbols:
+                        message += f"\n\n*AI-Selected ({len(new_symbols)} stocks)*\n"
+                        message += ", ".join(new_symbols)
+
+                    message += f"\n\n*Total Universe: {len(symbols) + len(new_symbols)} stocks*"
+
+            message += "\n\nUse /scan to refresh AI picks"
 
             await update.message.reply_text(message, parse_mode="Markdown")
         except Exception as e:
@@ -360,6 +396,7 @@ TP: ${trade_info.get('take_profit', 0):.2f}
                 ("positions", self.positions_command),
                 ("trades", self.trades_command),
                 ("stats", self.stats_command),
+                ("scan", self.scan_command),
                 ("watchlist", self.watchlist_command),
                 ("strategies", self.strategies_command),
                 ("risk", self.risk_command),

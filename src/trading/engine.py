@@ -9,6 +9,7 @@ import time
 
 from src.trading.alpaca_client import AlpacaClient
 from src.agents.ai_agent import AITradingAgent
+from src.agents.stock_scanner import StockScannerAgent
 from src.trading.risk_manager import RiskManager
 from src.trading.strategies import StrategyManager
 from src.monitoring.logger import log_trade
@@ -25,6 +26,7 @@ class TradingEngine:
         # Initialize components
         self.alpaca = AlpacaClient()
         self.ai_agent = AITradingAgent()
+        self.scanner = StockScannerAgent()
         self.risk_manager = RiskManager()
         self.strategy_manager = StrategyManager()
 
@@ -35,12 +37,13 @@ class TradingEngine:
         self.start_time = datetime.now()
 
         # Cache to avoid redundant AI calls
-        self._price_cache: Dict[str, Dict] = {}
+        self._price_cache = {}  # type: Dict[str, Dict]
 
         logger.info(
             f"Trading Engine initialized | "
             f"Mode: {self.settings.trading_mode} | "
-            f"Watchlist: {len(self.settings.get_watchlist_symbols())} stocks"
+            f"Base watchlist: {len(self.settings.get_watchlist_symbols())} stocks | "
+            f"AI Scanner: ENABLED"
         )
 
     def start(self):
@@ -105,8 +108,8 @@ class TradingEngine:
                     time.sleep(60)
                     continue
 
-                # 3. Get watchlist snapshots
-                symbols = self.settings.get_watchlist_symbols()
+                # 3. Dynamic stock scanning (AI + Yahoo Finance + Alpaca)
+                symbols = self._get_trading_symbols()
                 snapshots = self.alpaca.get_watchlist_snapshots(symbols)
 
                 if not snapshots:
@@ -114,7 +117,7 @@ class TradingEngine:
                     time.sleep(self.settings.scan_interval)
                     continue
 
-                logger.info(f"Scanned {len(snapshots)} stocks")
+                logger.info(f"Trading {len(snapshots)} stocks (AI-selected + watchlist)")
 
                 # 4. Find opportunities
                 opportunities = self.find_opportunities(
@@ -426,6 +429,60 @@ class TradingEngine:
 
             except Exception as e:
                 logger.error(f"Error managing position {pos.get('symbol', '?')}: {e}")
+
+    # ── Dynamic Stock Scanner ──
+
+    def _get_trading_symbols(self):
+        # type: () -> List[str]
+        """Get symbols to trade: AI-scanned + fixed watchlist"""
+        # Always include fixed watchlist
+        symbols = list(self.settings.get_watchlist_symbols())
+
+        # Run AI scanner if needed (every 15 minutes)
+        if self.scanner.needs_rescan():
+            try:
+                logger.info("Running AI market scan (Yahoo Finance + web + Alpaca)...")
+
+                # Get Alpaca market movers
+                alpaca_movers = self.alpaca.get_most_active_stocks(limit=50)
+
+                # Run full scan (Yahoo Finance + news + AI analysis)
+                picks = self.scanner.full_market_scan(alpaca_movers=alpaca_movers)
+
+                # Add AI-selected symbols
+                for pick in picks:
+                    sym = pick.get("symbol", "")
+                    if sym and sym not in symbols:
+                        symbols.append(sym)
+
+                logger.info(
+                    f"AI Scanner added {len(picks)} stocks | "
+                    f"Total trading universe: {len(symbols)} stocks"
+                )
+            except Exception as e:
+                logger.error(f"Scanner error (using fixed watchlist): {e}")
+        else:
+            # Use cached scanner results
+            for sym in self.scanner.get_dynamic_watchlist():
+                if sym not in symbols:
+                    symbols.append(sym)
+
+        return symbols
+
+    def run_scan(self):
+        # type: () -> List[Dict[str, Any]]
+        """Manually trigger a market scan (for Telegram /scan command)"""
+        try:
+            alpaca_movers = self.alpaca.get_most_active_stocks(limit=50)
+            return self.scanner.full_market_scan(alpaca_movers=alpaca_movers)
+        except Exception as e:
+            logger.error(f"Manual scan error: {e}")
+            return []
+
+    def get_scan_summary(self):
+        # type: () -> str
+        """Get scan summary for Telegram"""
+        return self.scanner.get_scan_summary()
 
     # ── API methods for Telegram bot ──
 

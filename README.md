@@ -1,259 +1,187 @@
-# Polymarket AI Trading Bot 🤖
+# Aggressive US Stock Trading Bot
 
-An autonomous AI-powered trading bot for Polymarket prediction markets, running 24/7 on Raspberry Pi 4.
+An AI-powered autonomous stock trading bot that trades US stocks via Alpaca Markets API with aggressive strategies, AI-driven stock discovery (Yahoo Finance + web scanning), and remote control via Telegram.
 
-## ⚠️ Important Disclaimer
+## Warning
 
-**Trading involves significant financial risk. This bot is for educational purposes. Only invest money you can afford to lose.**
+**Trading involves significant financial risk. This bot uses aggressive strategies with high risk/high reward. Only invest money you can afford to lose.**
 
-- Only 7.6% of Polymarket traders are profitable
 - Start with paper trading mode before using real money
-- Never invest more than you can afford to lose
+- This bot tolerates up to 30% drawdowns by design
 - Past performance does not guarantee future results
 
-## 🎯 Features
+## Features
 
-- **AI-Powered Decision Making**: Uses Claude AI (Anthropic) for market analysis
-- **24/7 Autonomous Trading**: Runs continuously on Raspberry Pi
-- **Multiple Trading Strategies**:
-  - Arbitrage detection
-  - News-based trading
-  - Liquidity provision
-  - Market inefficiency exploitation
-- **Risk Management**:
-  - Daily loss limits
-  - Position size limits
-  - Stop-loss automation
-  - Paper trading mode
-- **Telegram Control**: Monitor and control the bot remotely
-- **Real-time Monitoring**: Comprehensive logging and alerts
+- **AI-Powered Stock Discovery**: GPT-4o scans Yahoo Finance, market news, and sector data to find the best opportunities
+- **Dynamic Watchlist**: AI scanner discovers new stocks every 15 minutes instead of trading a fixed list
+- **4 Aggressive Trading Strategies**: Momentum, Mean Reversion, Breakout, Gap Trading
+- **Bracket Orders**: Automatic take-profit and stop-loss on every trade
+- **Trailing Stops**: Locks in profits as stocks move in your favor
+- **Risk Management**: PDT rule awareness, daily loss limits, position concentration limits
+- **Telegram Remote Control**: Monitor and control the bot from your phone
+- **Paper Trading**: Test everything risk-free with Alpaca's paper trading
 
-## 🛠️ Technology Stack
+## Technology Stack
 
-- Python 3.9+
-- Anthropic Claude API
-- Polymarket CLOB API (py-clob-client)
-- Web3.py for Polygon blockchain
-- Python Telegram Bot
-- SQLAlchemy for data storage
-- Loguru for logging
+- Python 3.8+
+- OpenAI GPT-4o (AI analysis and stock scanning)
+- Alpaca Markets API (broker - commission-free US stock trading)
+- Yahoo Finance / yfinance (market data, news, sector performance)
+- Python Telegram Bot (remote control)
+- Pydantic Settings (configuration)
+- Loguru (logging)
 
-## 📋 Prerequisites
+## Quick Start
 
-### Hardware
-- Raspberry Pi 4 (8GB RAM recommended)
-- MicroSD card (32GB+ recommended)
-- Stable internet connection
-- Power supply
+### 1. Create Accounts
 
-### Software
-- Raspberry Pi OS (64-bit)
-- Python 3.9.10 or higher
+- **Alpaca Markets** (free): https://alpaca.markets - Generate Paper Trading API keys
+- **OpenAI**: https://platform.openai.com - Get API key
+- **Telegram**: Create bot via @BotFather
 
-### Accounts & Keys
-1. **Polymarket Account**
-   - Create account at https://polymarket.com
-   - Generate API credentials
-
-2. **Polygon Wallet**
-   - MetaMask or similar wallet
-   - Fund with USDC on Polygon network
-
-3. **Anthropic API Key**
-   - Sign up at https://console.anthropic.com
-   - Generate API key
-
-4. **Telegram Bot**
-   - Create bot via @BotFather on Telegram
-   - Get bot token and your chat ID
-
-## 🚀 Installation
-
-### 1. Clone the Repository
+### 2. Install
 
 ```bash
 git clone <your-repo-url>
 cd polymarket-ai-bot
-```
-
-### 2. Set Up Python Environment
-
-```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
-
-# Install Python dependencies
-sudo apt install python3-pip python3-venv -y
-
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install requirements
+python -m venv venv
+source venv/bin/activate  # or venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment
+### 3. Configure
 
 ```bash
-# Copy example environment file
 cp .env.example .env
-
-# Edit with your credentials
-nano .env
+# Edit .env with your API keys
 ```
 
-Fill in all required credentials in the `.env` file.
+Required environment variables:
+```
+ALPACA_API_KEY=your_key
+ALPACA_SECRET_KEY=your_secret
+ALPACA_BASE_URL=https://paper-api.alpaca.markets
+OPENAI_API_KEY=your_openai_key
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+```
 
-### 4. Create Polygon Wallet (If you don't have one)
-
-See [WALLET_SETUP.md](docs/WALLET_SETUP.md) for detailed instructions.
-
-## 🎮 Usage
-
-### Paper Trading (Recommended First)
+### 4. Run
 
 ```bash
-# Make sure PAPER_TRADING=true in .env
 python src/main.py
 ```
 
-### Live Trading
+## Project Structure
 
-```bash
-# Set PAPER_TRADING=false in .env
-# WARNING: Uses real money!
-python src/main.py
+```
+polymarket-ai-bot/
+├── src/
+│   ├── agents/
+│   │   ├── ai_agent.py          # GPT-4o trading analysis
+│   │   └── stock_scanner.py     # AI market scanner (Yahoo Finance + web)
+│   ├── trading/
+│   │   ├── alpaca_client.py     # Alpaca broker API
+│   │   ├── engine.py            # Main trading engine
+│   │   ├── risk_manager.py      # Aggressive risk management
+│   │   └── strategies.py        # 4 trading strategies
+│   ├── telegram_bot/
+│   │   └── bot.py               # Telegram remote control
+│   ├── monitoring/
+│   │   └── logger.py            # Logging system
+│   └── main.py                  # Entry point
+├── config/
+│   └── settings.py              # Configuration management
+├── docs/                        # Documentation
+├── requirements.txt             # Python dependencies
+├── .env.example                 # Example configuration
+└── .gitignore                   # Git ignore rules
 ```
 
-### Telegram Commands
+## How It Works
 
-Once the bot is running, you can control it via Telegram:
+### AI Stock Scanner
+Every 15 minutes, the bot:
+1. Fetches trending stocks from Yahoo Finance
+2. Gets top gainers, losers, and most active stocks
+3. Pulls market news headlines
+4. Checks sector ETF performance (SPY, QQQ, XLK, etc.)
+5. Scans Alpaca for biggest market movers
+6. Sends all data to GPT-4o which selects the top 15 stocks to trade
 
-- `/start` - Start the bot
-- `/stop` - Stop trading (bot keeps running)
-- `/status` - Get current status and balance
-- `/positions` - View open positions
-- `/balance` - Check account balance
-- `/stats` - Trading statistics
-- `/strategy <name>` - Change trading strategy
-- `/pause` - Pause trading temporarily
-- `/resume` - Resume trading
+### Trading Strategies
 
-## 🔧 Configuration
+| Strategy | How It Works | Risk |
+|----------|-------------|------|
+| **Momentum** | Stocks up >2% with 1.5x volume | High |
+| **Mean Reversion** | RSI < 30, stock down >3% | Medium-High |
+| **Breakout** | Price breaks 20-bar high with 2x volume | High |
+| **Gap Trading** | Stocks gapping >2% at open | High |
 
-Edit `config/settings.py` or `.env` file to customize:
+### Risk Management
 
-- **Initial Balance**: Starting capital
-- **Max Position Size**: Maximum per trade
-- **Daily Loss Limit**: Stop trading if exceeded
-- **Risk Per Trade**: Percentage of balance to risk
-- **Trading Strategies**: Enable/disable specific strategies
+- Position sizing based on confidence (5-25% of equity)
+- Stop loss: -8% per trade
+- Take profit: +15% per trade
+- Trailing stop: activates at +5%, trails 3% below peak
+- Daily loss limit: 30% of equity
+- Max 5 concurrent positions
+- PDT rule tracking (3 day trades per 5 days if < $25k)
 
-## 📊 Trading Strategies
+## Telegram Commands
 
-### 1. Arbitrage Strategy (Low Risk)
-- Detects price discrepancies across markets
-- Executes simultaneous buy/sell orders
-- Target: 1-5% per trade
+| Command | Description |
+|---------|-------------|
+| `/start` | Welcome message and command list |
+| `/status` | Bot status, equity, P&L |
+| `/balance` | Detailed account balance |
+| `/positions` | Open stock positions with P&L |
+| `/trades` | Recent trade history |
+| `/stats` | Win rate, P&L statistics |
+| `/scan` | Trigger AI market scan |
+| `/watchlist` | Fixed + AI-selected stocks |
+| `/strategies` | Active strategy status |
+| `/risk` | Risk metrics and PDT status |
+| `/mode` | Trading parameters |
+| `/pause` | Pause trading |
+| `/resume` | Resume trading |
+| `/closeall` | Emergency close all positions |
 
-### 2. News-Based Trading (Medium Risk)
-- Monitors news feeds and social media
-- Uses AI to assess impact on markets
-- Quick entry/exit based on events
+## Configuration
 
-### 3. Liquidity Provision (Medium Risk)
-- Provides liquidity to new markets
-- Earns from spreads
-- Target: 80-200% APY
-
-### 4. High-Frequency Trading (High Risk)
-- Exploits short-term price movements
-- Focuses on markets near resolution (95c+)
-- Requires quick execution
-
-## 🛡️ Security Best Practices
-
-1. **Never share your private keys or API keys**
-2. **Use hardware wallet for large amounts**
-3. **Start with small amounts ($10-20) for testing**
-4. **Enable 2FA on all accounts**
-5. **Regularly backup your wallet**
-6. **Monitor bot activity daily**
-7. **Set conservative risk limits initially**
-
-## 📈 Monitoring
-
-Logs are stored in `logs/` directory:
-- `trading.log` - All trading activity
-- `errors.log` - Error tracking
-- `performance.log` - Performance metrics
-
-View real-time logs:
-```bash
-tail -f logs/trading.log
-```
-
-## 🔄 Running 24/7 on Raspberry Pi
-
-### Set Up Systemd Service
+Key settings in `.env`:
 
 ```bash
-sudo cp config/polymarket-bot.service /etc/systemd/system/
-sudo systemctl enable polymarket-bot
-sudo systemctl start polymarket-bot
+# Trading behavior
+TRADING_MODE=aggressive
+CONFIDENCE_THRESHOLD=55          # Min confidence to trade (%)
+MAX_CONCURRENT_POSITIONS=5       # Max open positions
+MAX_POSITION_PCT=0.25            # Max 25% equity per trade
+SCAN_INTERVAL=60                 # Seconds between trading cycles
+
+# Risk management
+STOP_LOSS_PCT=-8.0               # Cut losers at -8%
+TAKE_PROFIT_PCT=15.0             # Take profits at +15%
+TRAILING_STOP_ENABLED=true       # Enable trailing stops
+DAILY_LOSS_LIMIT_PCT=0.30        # Stop if down 30%
+
+# Watchlist (base stocks, AI adds more dynamically)
+WATCHLIST=AAPL,TSLA,NVDA,MSFT,AMZN,META,GOOGL,AMD,NFLX,SPY,QQQ
 ```
 
-Check status:
-```bash
-sudo systemctl status polymarket-bot
-```
+## Documentation
 
-View logs:
-```bash
-sudo journalctl -u polymarket-bot -f
-```
-
-## 📚 Documentation
-
-- [Wallet Setup Guide](docs/WALLET_SETUP.md)
-- [Trading Strategies Explained](docs/STRATEGIES.md)
-- [Telegram Bot Commands](docs/TELEGRAM.md)
+- [Quick Start Guide](docs/QUICKSTART.md)
+- [Alpaca Setup](docs/ALPACA_SETUP.md)
+- [Trading Strategies](docs/STRATEGIES.md)
+- [Telegram Commands](docs/TELEGRAM.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [API Reference](docs/API.md)
 
-## 🤝 Contributing
+## Risk Warning
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
+**IMPORTANT**: This software is provided "as is" without warranty. Trading stocks involves substantial risk of loss. The developers are not responsible for any financial losses incurred while using this software.
 
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## ⚠️ Risk Warning
-
-**IMPORTANT**: This software is provided "as is" without warranty of any kind. Trading cryptocurrencies and prediction markets involves substantial risk of loss. The developers are not responsible for any financial losses incurred while using this software.
-
-- Start with paper trading
+- Always paper trade first
 - Only invest what you can afford to lose
-- Understand the strategies before enabling them
 - Monitor the bot regularly
-- Be prepared for losses
-
-## 📞 Support
-
-- GitHub Issues: [Report bugs or request features]
-- Telegram Community: [Coming soon]
-- Documentation: See `docs/` folder
-
-## 🙏 Acknowledgments
-
-- Polymarket for the prediction market platform
-- Anthropic for Claude AI
-- The open-source community
-
----
-
-**Built with ❤️ for autonomous trading**
-
-*Remember: Past performance is not indicative of future results. Trade responsibly.*
+- Understand the strategies before going live
