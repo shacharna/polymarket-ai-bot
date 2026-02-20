@@ -1,25 +1,34 @@
 """
-Risk Management System
-Enforces trading limits and protects capital
+Risk Management System - Aggressive Mode
+Enforces trading limits while allowing high-risk/high-reward trades
 """
 from typing import Dict, Optional
 from datetime import datetime, timedelta
 from loguru import logger
 from config.settings import get_settings
+import pytz
 
 
 class RiskManager:
-    """Manages risk and enforces trading limits"""
+    """Manages risk with aggressive parameters for stock trading"""
 
     def __init__(self):
         """Initialize risk manager"""
         self.settings = get_settings()
         self.daily_loss = 0.0
+        self.daily_profit = 0.0
         self.daily_trades = 0
+        self.day_trades_5d = []  # Track day trades for PDT rule
         self.last_reset = datetime.now()
-        self.open_positions_value = 0.0
 
-        logger.info("Risk Manager initialized")
+        # Trailing stop tracking: symbol -> {peak_price, activated}
+        self.trailing_stops: Dict[str, Dict] = {}
+
+        logger.info(
+            f"Risk Manager initialized | Mode: {self.settings.trading_mode} | "
+            f"Stop Loss: {self.settings.stop_loss_pct}% | "
+            f"Take Profit: {self.settings.take_profit_pct}%"
+        )
 
     def reset_daily_stats(self):
         """Reset daily statistics at midnight"""
@@ -27,151 +36,169 @@ class RiskManager:
         if now.date() > self.last_reset.date():
             logger.info("Resetting daily statistics")
             self.daily_loss = 0.0
+            self.daily_profit = 0.0
             self.daily_trades = 0
             self.last_reset = now
 
-    def can_trade(self) -> tuple[bool, str]:
+            # Clean up old day trade records (keep last 5 business days)
+            cutoff = now - timedelta(days=7)
+            self.day_trades_5d = [
+                dt for dt in self.day_trades_5d if dt > cutoff
+            ]
+
+    def can_trade(self, current_equity: float = None) -> tuple[bool, str]:
         """
         Check if trading is allowed
 
-        Returns:
-            (can_trade, reason)
+        Args:
+            current_equity: Current account equity for dynamic limit calculation
         """
         self.reset_daily_stats()
 
         # Check daily loss limit
-        if abs(self.daily_loss) >= self.settings.daily_loss_limit:
-            return False, f"Daily loss limit reached (${abs(self.daily_loss):.2f})"
+        if current_equity:
+            dynamic_limit = current_equity * self.settings.daily_loss_limit_pct
+        else:
+            dynamic_limit = self.settings.daily_loss_limit
 
-        # Check maximum daily trades (prevent overtrading)
-        max_daily_trades = 50
-        if self.daily_trades >= max_daily_trades:
-            return False, f"Maximum daily trades reached ({max_daily_trades})"
+        if abs(self.daily_loss) >= dynamic_limit:
+            return False, f"Daily loss limit reached (${abs(self.daily_loss):.2f} / ${dynamic_limit:.2f})"
+
+        # Check maximum daily trades
+        if self.daily_trades >= self.settings.max_daily_trades:
+            return False, f"Maximum daily trades reached ({self.settings.max_daily_trades})"
 
         return True, "Trading allowed"
 
-    def validate_position_size(
-        self,
-        position_size: float,
-        current_balance: float
-    ) -> tuple[bool, float, str]:
+    def check_pdt_limit(self) -> tuple[bool, str]:
         """
-        Validate and adjust position size
-
-        Args:
-            position_size: Requested position size in USD
-            current_balance: Current account balance
+        Check Pattern Day Trader rule.
+        If account < $25k, limited to 3 day trades per 5 business days.
 
         Returns:
-            (is_valid, adjusted_size, reason)
+            (can_day_trade, warning_message)
         """
-        # Check minimum position size
-        min_size = 1.0
-        if position_size < min_size:
+        # Count day trades in last 5 business days
+        now = datetime.now()
+        five_days_ago = now - timedelta(days=7)  # 7 calendar days ~ 5 business
+        recent_day_trades = [
+            dt for dt in self.day_trades_5d if dt > five_days_ago
+        ]
+        count = len(recent_day_trades)
+
+        if count >= 3:
+            return False, f"PDT limit: {count}/3 day trades used in 5 days. Cannot day trade."
+        elif count == 2:
+            return True, f"PDT warning: {count}/3 day trades used. 1 remaining."
+        else:
+            return True, f"PDT OK: {count}/3 day trades used."
+
+    def record_day_trade(self):
+        """Record a day trade (bought and sold same day)"""
+        self.day_trades_5d.append(datetime.now())
+
+    def validate_position_size(
+        self,
+        position_size_usd: float,
+        buying_power: float,
+        current_equity: float,
+    ) -> tuple[bool, float, str]:
+        """
+        Validate and adjust position size for aggressive trading
+
+        Args:
+            position_size_usd: Requested position size in USD
+            buying_power: Available buying power
+            current_equity: Current account equity
+        """
+        # Minimum trade size
+        min_size = 10.0
+        if position_size_usd < min_size:
             return False, 0, f"Position size too small (min: ${min_size})"
 
-        # Check maximum position size from settings
-        max_size = self.settings.max_position_size
-        if position_size > max_size:
+        # Max percentage of equity per trade
+        max_from_equity = current_equity * self.settings.max_position_pct
+        if position_size_usd > max_from_equity:
             logger.warning(
-                f"Position size ${position_size:.2f} exceeds max ${max_size:.2f}, adjusting"
+                f"Position ${position_size_usd:.2f} exceeds "
+                f"{self.settings.max_position_pct*100:.0f}% of equity, "
+                f"capping at ${max_from_equity:.2f}"
             )
-            position_size = max_size
+            position_size_usd = max_from_equity
 
-        # Check percentage of balance (max 10% per trade)
-        max_pct_per_trade = 0.10
-        max_from_balance = current_balance * max_pct_per_trade
-        if position_size > max_from_balance:
-            logger.warning(
-                f"Position size ${position_size:.2f} exceeds 10% of balance, "
-                f"adjusting to ${max_from_balance:.2f}"
-            )
-            position_size = max_from_balance
+        # Check absolute max
+        if position_size_usd > self.settings.max_position_size:
+            position_size_usd = self.settings.max_position_size
 
-        # Check if we have enough balance
-        if position_size > current_balance:
-            return False, 0, f"Insufficient balance (need ${position_size:.2f}, have ${current_balance:.2f})"
+        # Check buying power
+        if position_size_usd > buying_power:
+            return False, 0, f"Insufficient buying power (${buying_power:.2f})"
 
-        return True, position_size, "Position size valid"
+        return True, round(position_size_usd, 2), "Position size valid"
 
     def calculate_position_size(
         self,
         confidence: int,
-        current_balance: float,
-        ai_suggested_size: float = None
+        buying_power: float,
+        current_equity: float,
+        ai_suggested_size: float = None,
     ) -> float:
         """
-        Calculate appropriate position size based on confidence and balance
+        Calculate aggressive position size based on confidence
 
-        Args:
-            confidence: AI confidence level (0-100)
-            current_balance: Current account balance
-            ai_suggested_size: AI suggested position size (1-10 scale)
-
-        Returns:
-            Position size in USD
+        Aggressive tiers:
+        - 55-65% confidence: 10% of equity
+        - 65-80% confidence: 15% of equity
+        - 80%+ confidence: 20-25% of equity
         """
-        # Base position size on confidence
-        # Low confidence (0-40): 1-2% of balance
-        # Medium confidence (41-70): 2-5% of balance
-        # High confidence (71-100): 5-10% of balance
-
-        if confidence < 40:
-            pct = 0.01  # 1%
-        elif confidence < 70:
-            pct = 0.03  # 3%
+        if confidence < 55:
+            pct = 0.05
+        elif confidence < 65:
+            pct = 0.10
+        elif confidence < 80:
+            pct = 0.15
         else:
-            pct = 0.07  # 7%
+            pct = 0.20
 
-        # Adjust by AI suggested size if provided
+        # Scale by AI suggested size (1-10 scale)
         if ai_suggested_size:
-            # Scale: 1-10 → 0.5x-2.0x multiplier
-            multiplier = 0.5 + (ai_suggested_size / 10) * 1.5
+            multiplier = 0.7 + (ai_suggested_size / 10) * 0.6  # 0.7x to 1.3x
             pct *= multiplier
 
-        position_size = current_balance * pct
+        position_size = current_equity * pct
 
-        # Apply maximum limits
+        # Apply caps
         position_size = min(position_size, self.settings.max_position_size)
-
-        # Round to 2 decimals
-        position_size = round(position_size, 2)
+        position_size = min(position_size, buying_power * 0.95)  # Keep 5% buffer
+        position_size = round(max(position_size, 0), 2)
 
         logger.debug(
-            f"Calculated position size: ${position_size:.2f} "
-            f"(confidence: {confidence}%, balance: ${current_balance:.2f})"
+            f"Position size: ${position_size:.2f} "
+            f"(confidence: {confidence}%, equity: ${current_equity:.2f})"
         )
-
         return position_size
+
+    def calculate_qty(self, position_size_usd: float, price: float) -> int:
+        """Calculate number of shares to buy"""
+        if price <= 0:
+            return 0
+        qty = int(position_size_usd / price)
+        return max(qty, 1) if position_size_usd >= price else 0
 
     def should_stop_loss(
         self,
         entry_price: float,
         current_price: float,
-        position_type: str
+        position_type: str,
     ) -> tuple[bool, str]:
-        """
-        Check if stop loss should be triggered
-
-        Args:
-            entry_price: Entry price
-            current_price: Current price
-            position_type: "BUY" or "SELL"
-
-        Returns:
-            (should_stop, reason)
-        """
-        # Calculate loss percentage
-        if position_type.upper() == "BUY":
+        """Check if stop loss should trigger"""
+        if position_type.upper() in ("BUY", "LONG"):
             loss_pct = ((current_price - entry_price) / entry_price) * 100
-        else:  # SELL
+        else:
             loss_pct = ((entry_price - current_price) / entry_price) * 100
 
-        # Stop loss at -15%
-        stop_loss_pct = -15.0
-
-        if loss_pct <= stop_loss_pct:
-            return True, f"Stop loss triggered: {loss_pct:.2f}%"
+        if loss_pct <= self.settings.stop_loss_pct:
+            return True, f"Stop loss triggered: {loss_pct:.2f}% (limit: {self.settings.stop_loss_pct}%)"
 
         return False, ""
 
@@ -180,63 +207,123 @@ class RiskManager:
         entry_price: float,
         current_price: float,
         position_type: str,
-        target_profit_pct: float = 20.0
     ) -> tuple[bool, str]:
-        """
-        Check if profit target is reached
-
-        Args:
-            entry_price: Entry price
-            current_price: Current price
-            position_type: "BUY" or "SELL"
-            target_profit_pct: Target profit percentage
-
-        Returns:
-            (should_exit, reason)
-        """
-        # Calculate profit percentage
-        if position_type.upper() == "BUY":
+        """Check if take profit target is reached"""
+        if position_type.upper() in ("BUY", "LONG"):
             profit_pct = ((current_price - entry_price) / entry_price) * 100
-        else:  # SELL
+        else:
             profit_pct = ((entry_price - current_price) / entry_price) * 100
 
-        if profit_pct >= target_profit_pct:
-            return True, f"Profit target reached: {profit_pct:.2f}%"
+        if profit_pct >= self.settings.take_profit_pct:
+            return True, f"Take profit reached: {profit_pct:.2f}% (target: {self.settings.take_profit_pct}%)"
 
         return False, ""
 
-    def record_trade(self, profit_loss: float):
+    def update_trailing_stop(
+        self,
+        symbol: str,
+        entry_price: float,
+        current_price: float,
+        position_type: str,
+    ) -> tuple[bool, str]:
         """
-        Record a completed trade
-
-        Args:
-            profit_loss: Profit or loss amount
+        Update and check trailing stop for a position.
+        Activates after +activation_pct from entry, then trails at distance_pct below peak.
         """
-        self.daily_loss += profit_loss
-        self.daily_trades += 1
+        if not self.settings.trailing_stop_enabled:
+            return False, ""
 
-        if profit_loss < 0:
-            logger.warning(f"Trade loss recorded: ${profit_loss:.2f}")
+        activation = self.settings.trailing_stop_activation
+        distance = self.settings.trailing_stop_distance
+
+        # Calculate current profit
+        if position_type.upper() in ("BUY", "LONG"):
+            profit_pct = (current_price - entry_price) / entry_price
         else:
-            logger.info(f"Trade profit recorded: ${profit_loss:.2f}")
+            profit_pct = (entry_price - current_price) / entry_price
 
+        # Initialize tracking
+        if symbol not in self.trailing_stops:
+            self.trailing_stops[symbol] = {
+                "peak_price": current_price,
+                "activated": False,
+            }
+
+        ts = self.trailing_stops[symbol]
+
+        # Update peak price
+        if position_type.upper() in ("BUY", "LONG"):
+            if current_price > ts["peak_price"]:
+                ts["peak_price"] = current_price
+        else:
+            if current_price < ts["peak_price"]:
+                ts["peak_price"] = current_price
+
+        # Check activation
+        if not ts["activated"] and profit_pct >= activation:
+            ts["activated"] = True
+            logger.info(
+                f"Trailing stop activated for {symbol} at "
+                f"{profit_pct*100:.1f}% profit"
+            )
+
+        # Check if trailing stop triggered
+        if ts["activated"]:
+            if position_type.upper() in ("BUY", "LONG"):
+                trail_price = ts["peak_price"] * (1 - distance)
+                if current_price <= trail_price:
+                    return True, (
+                        f"Trailing stop: ${current_price:.2f} below trail "
+                        f"${trail_price:.2f} (peak ${ts['peak_price']:.2f})"
+                    )
+            else:
+                trail_price = ts["peak_price"] * (1 + distance)
+                if current_price >= trail_price:
+                    return True, (
+                        f"Trailing stop: ${current_price:.2f} above trail "
+                        f"${trail_price:.2f} (peak ${ts['peak_price']:.2f})"
+                    )
+
+        return False, ""
+
+    def clear_trailing_stop(self, symbol: str):
+        """Remove trailing stop tracking when position closes"""
+        self.trailing_stops.pop(symbol, None)
+
+    def record_trade(self, profit_loss: float):
+        """Record a completed trade"""
+        if profit_loss < 0:
+            self.daily_loss += profit_loss
+            logger.warning(f"Trade loss: ${profit_loss:.2f}")
+        else:
+            self.daily_profit += profit_loss
+            logger.info(f"Trade profit: ${profit_loss:+.2f}")
+
+        self.daily_trades += 1
         logger.info(
-            f"Daily stats: {self.daily_trades} trades, "
-            f"${self.daily_loss:+.2f} P&L"
+            f"Daily: {self.daily_trades} trades | "
+            f"P&L: ${self.daily_loss + self.daily_profit:+.2f}"
         )
 
     def get_risk_metrics(self) -> Dict:
-        """
-        Get current risk metrics
+        """Get current risk metrics"""
+        pdt_ok, pdt_msg = self.check_pdt_limit()
+        can_trade, trade_msg = self.can_trade()
 
-        Returns:
-            Dictionary with risk metrics
-        """
         return {
+            "daily_pnl": self.daily_loss + self.daily_profit,
             "daily_loss": self.daily_loss,
+            "daily_profit": self.daily_profit,
             "daily_trades": self.daily_trades,
-            "loss_limit": self.settings.daily_loss_limit,
-            "loss_limit_used_pct": (abs(self.daily_loss) / self.settings.daily_loss_limit) * 100,
-            "can_trade": self.can_trade()[0],
-            "last_reset": self.last_reset.isoformat()
+            "max_daily_trades": self.settings.max_daily_trades,
+            "can_trade": can_trade,
+            "trade_status": trade_msg,
+            "pdt_ok": pdt_ok,
+            "pdt_status": pdt_msg,
+            "trailing_stops_active": sum(
+                1 for ts in self.trailing_stops.values() if ts["activated"]
+            ),
+            "stop_loss_pct": self.settings.stop_loss_pct,
+            "take_profit_pct": self.settings.take_profit_pct,
+            "last_reset": self.last_reset.isoformat(),
         }

@@ -1,15 +1,13 @@
 """
-Trading Engine
-Main engine that coordinates all trading activities
+Trading Engine - Aggressive Stock Trading
+Coordinates all components: Alpaca, AI, strategies, risk management
 """
 from typing import Dict, List, Optional, Any
 from loguru import logger
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
-import asyncio
-from threading import Thread
 
-from src.trading.polymarket_client import PolymarketClient
+from src.trading.alpaca_client import AlpacaClient
 from src.agents.ai_agent import AITradingAgent
 from src.trading.risk_manager import RiskManager
 from src.trading.strategies import StrategyManager
@@ -18,14 +16,14 @@ from config.settings import get_settings
 
 
 class TradingEngine:
-    """Main trading engine coordinating all components"""
+    """Main trading engine for aggressive stock trading"""
 
     def __init__(self):
         """Initialize trading engine"""
         self.settings = get_settings()
 
         # Initialize components
-        self.polymarket = PolymarketClient()
+        self.alpaca = AlpacaClient()
         self.ai_agent = AITradingAgent()
         self.risk_manager = RiskManager()
         self.strategy_manager = StrategyManager()
@@ -33,23 +31,23 @@ class TradingEngine:
         # State
         self.is_running = False
         self.is_paused = False
-        self.positions = []
         self.trades = []
         self.start_time = datetime.now()
 
-        # Performance tracking
-        self.initial_balance = self.settings.initial_balance
-        self.current_balance = self.initial_balance
+        # Cache to avoid redundant AI calls
+        self._price_cache: Dict[str, Dict] = {}
 
-        logger.info("Trading Engine initialized")
+        logger.info(
+            f"Trading Engine initialized | "
+            f"Mode: {self.settings.trading_mode} | "
+            f"Watchlist: {len(self.settings.get_watchlist_symbols())} stocks"
+        )
 
     def start(self):
         """Start the trading engine"""
         logger.info("Starting trading engine...")
         self.is_running = True
         self.is_paused = False
-
-        # Main trading loop
         self.run_trading_loop()
 
     def stop(self):
@@ -58,12 +56,10 @@ class TradingEngine:
         self.is_running = False
 
     def pause(self):
-        """Pause trading"""
         logger.info("Pausing trading...")
         self.is_paused = True
 
     def resume(self):
-        """Resume trading"""
         logger.info("Resuming trading...")
         self.is_paused = False
 
@@ -74,437 +70,443 @@ class TradingEngine:
         while self.is_running:
             try:
                 loop_count += 1
-                logger.debug(f"Trading loop iteration {loop_count}")
 
-                # Check if paused
                 if self.is_paused:
-                    logger.debug("Trading paused, skipping iteration")
+                    logger.debug("Trading paused, skipping")
                     time.sleep(30)
                     continue
 
-                # 1. Update balance
-                self.update_balance()
+                # Check market hours
+                if self.settings.market_hours_only and not self.alpaca.is_market_open():
+                    clock = self.alpaca.get_market_clock()
+                    if clock:
+                        logger.debug(
+                            f"Market closed. Next open: {clock.get('next_open', '?')}"
+                        )
+                    time.sleep(60)
+                    continue
+
+                logger.debug(f"--- Trading loop #{loop_count} ---")
+
+                # 1. Get account info
+                account = self.alpaca.get_account()
+                if not account:
+                    logger.error("Failed to get account info")
+                    time.sleep(30)
+                    continue
+
+                equity = account["equity"]
+                buying_power = account["buying_power"]
 
                 # 2. Check risk limits
-                can_trade, reason = self.risk_manager.can_trade()
+                can_trade, reason = self.risk_manager.can_trade(equity)
                 if not can_trade:
                     logger.warning(f"Cannot trade: {reason}")
                     time.sleep(60)
                     continue
 
-                # 3. Scan markets
-                markets = self.scan_markets()
+                # 3. Get watchlist snapshots
+                symbols = self.settings.get_watchlist_symbols()
+                snapshots = self.alpaca.get_watchlist_snapshots(symbols)
 
-                # 4. Analyze markets with strategies
-                opportunities = self.find_opportunities(markets)
+                if not snapshots:
+                    logger.warning("No snapshot data available")
+                    time.sleep(self.settings.scan_interval)
+                    continue
+
+                logger.info(f"Scanned {len(snapshots)} stocks")
+
+                # 4. Find opportunities
+                opportunities = self.find_opportunities(
+                    snapshots, equity, buying_power
+                )
 
                 # 5. Execute trades
                 if opportunities:
-                    self.execute_opportunities(opportunities)
+                    self.execute_opportunities(opportunities, equity, buying_power)
 
                 # 6. Manage existing positions
                 self.manage_positions()
 
-                # Sleep between iterations (every 5 minutes)
-                logger.debug("Sleeping for 5 minutes...")
-                time.sleep(300)
+                # Sleep between cycles
+                time.sleep(self.settings.scan_interval)
 
             except KeyboardInterrupt:
                 logger.info("Received interrupt signal")
                 self.stop()
                 break
-
             except Exception as e:
                 logger.error(f"Error in trading loop: {e}")
-                time.sleep(60)
+                time.sleep(30)
 
         logger.info("Trading engine stopped")
 
-    def update_balance(self):
-        """Update current balance"""
-        try:
-            if self.settings.paper_trading:
-                # In paper trading, track balance ourselves
-                # Start with initial balance, adjust for P&L
-                total_pnl = sum(trade.get('pnl', 0) for trade in self.trades)
-                self.current_balance = self.initial_balance + total_pnl
-            else:
-                # Get real balance from Polymarket
-                balance_info = self.polymarket.get_balance()
-                if balance_info:
-                    self.current_balance = balance_info.get('total', 0)
-
-            logger.debug(f"Current balance: ${self.current_balance:.2f}")
-
-        except Exception as e:
-            logger.error(f"Error updating balance: {e}")
-
-    def scan_markets(self) -> List[Dict]:
-        """
-        Scan available markets
-
-        Returns:
-            List of market data
-        """
-        try:
-            # Get active markets from Polymarket
-            markets = self.polymarket.get_markets(limit=50)
-
-            logger.info(f"Scanned {len(markets)} markets")
-
-            return markets
-
-        except Exception as e:
-            logger.error(f"Error scanning markets: {e}")
-            return []
-
-    def find_opportunities(self, markets: List[Dict]) -> List[Dict]:
-        """
-        Find trading opportunities using strategies and AI
-
-        Args:
-            markets: List of markets to analyze
-
-        Returns:
-            List of opportunities
-        """
+    def find_opportunities(
+        self,
+        snapshots: Dict[str, Dict],
+        equity: float,
+        buying_power: float,
+    ) -> List[Dict[str, Any]]:
+        """Find trading opportunities using strategies and AI"""
         opportunities = []
 
-        for market in markets[:10]:  # Analyze top 10 markets
-            try:
-                # Prepare market data
-                market_data = self.prepare_market_data(market)
+        # Get current positions to avoid doubling up
+        current_positions = self.alpaca.get_positions()
+        held_symbols = {p["symbol"] for p in current_positions}
+        available_slots = self.settings.max_concurrent_positions - len(current_positions)
 
-                # Run strategy analysis
-                strategy_signals = self.strategy_manager.analyze_market(market_data)
+        if available_slots <= 0:
+            logger.debug(f"Max positions reached ({len(current_positions)})")
+            return []
 
-                if strategy_signals:
-                    # Get best signal from strategies
-                    best_signal = self.strategy_manager.get_best_signal(strategy_signals)
-
-                    # Validate with AI
-                    ai_analysis = self.ai_agent.analyze_market(market_data)
-
-                    # Combine strategy and AI signals
-                    if self.should_trade(best_signal, ai_analysis):
-                        opportunity = {
-                            **market_data,
-                            'signal': best_signal,
-                            'ai_analysis': ai_analysis,
-                            'timestamp': datetime.now()
-                        }
-                        opportunities.append(opportunity)
-
-                        logger.info(
-                            f"Found opportunity: {market_data.get('question', 'Unknown')[:50]}"
-                        )
-
-            except Exception as e:
-                logger.error(f"Error analyzing market: {e}")
+        # Phase 1: Run strategies on all watchlist stocks (fast, no API calls)
+        strategy_candidates = []
+        for symbol, snapshot in snapshots.items():
+            if symbol in held_symbols:
                 continue
 
-        logger.info(f"Found {len(opportunities)} trading opportunities")
+            bars = self.alpaca.get_bars(symbol, "15Min", 30)
+            signals = self.strategy_manager.analyze_stock(snapshot, bars)
+
+            if signals:
+                best_signal = self.strategy_manager.get_best_signal(signals)
+                if best_signal and best_signal.get("confidence", 0) >= self.settings.confidence_threshold:
+                    strategy_candidates.append({
+                        "symbol": symbol,
+                        "snapshot": snapshot,
+                        "bars": bars,
+                        "signal": best_signal,
+                    })
+
+        # Phase 2: AI analysis on top candidates (limit to reduce API costs)
+        # Also do a quick watchlist scan for AI-only opportunities
+        ai_opportunities = []
+        if self.settings.allow_ai_only_trades:
+            try:
+                ai_watchlist = self.ai_agent.analyze_watchlist(snapshots)
+                for opp in ai_watchlist:
+                    symbol = opp.get("symbol", "")
+                    if (
+                        symbol
+                        and symbol not in held_symbols
+                        and opp.get("confidence", 0) >= self.settings.confidence_threshold
+                        and opp.get("action", "HOLD") != "HOLD"
+                    ):
+                        ai_opportunities.append({
+                            "symbol": symbol,
+                            "snapshot": snapshots.get(symbol, {}),
+                            "ai_analysis": opp,
+                            "signal_source": "ai_only",
+                        })
+            except Exception as e:
+                logger.error(f"AI watchlist scan failed: {e}")
+
+        # Phase 3: Combine signals
+        # Strategy candidates get individual AI validation
+        for candidate in strategy_candidates[:5]:  # Limit AI calls
+            symbol = candidate["symbol"]
+            try:
+                ai_analysis = self.ai_agent.analyze_stock(
+                    symbol, candidate["snapshot"], candidate["bars"]
+                )
+
+                signal = candidate["signal"]
+
+                # Both agree -> highest conviction
+                if (
+                    ai_analysis.get("action") == signal.get("action")
+                    and ai_analysis.get("confidence", 0) >= self.settings.confidence_threshold
+                ):
+                    opportunities.append({
+                        "symbol": symbol,
+                        "snapshot": candidate["snapshot"],
+                        "signal": signal,
+                        "ai_analysis": ai_analysis,
+                        "signal_source": "combined",
+                        "combined_confidence": (
+                            signal.get("confidence", 0) + ai_analysis.get("confidence", 0)
+                        ) // 2,
+                    })
+                # Strategy-only trade
+                elif self.settings.allow_strategy_only_trades:
+                    opportunities.append({
+                        "symbol": symbol,
+                        "snapshot": candidate["snapshot"],
+                        "signal": signal,
+                        "ai_analysis": ai_analysis,
+                        "signal_source": "strategy_only",
+                        "combined_confidence": signal.get("confidence", 0),
+                    })
+            except Exception as e:
+                logger.error(f"AI analysis failed for {symbol}: {e}")
+                if self.settings.allow_strategy_only_trades:
+                    opportunities.append({
+                        "symbol": symbol,
+                        "snapshot": candidate["snapshot"],
+                        "signal": candidate["signal"],
+                        "ai_analysis": {"action": "HOLD", "confidence": 0},
+                        "signal_source": "strategy_only",
+                        "combined_confidence": candidate["signal"].get("confidence", 0),
+                    })
+
+        # Add AI-only opportunities that weren't already found by strategies
+        strategy_symbols = {o["symbol"] for o in opportunities}
+        for ai_opp in ai_opportunities:
+            if ai_opp["symbol"] not in strategy_symbols:
+                opportunities.append(ai_opp)
+
+        logger.info(f"Found {len(opportunities)} opportunities")
         return opportunities
 
-    def prepare_market_data(self, market: Dict) -> Dict:
-        """
-        Prepare market data for analysis
-
-        Args:
-            market: Raw market data from API
-
-        Returns:
-            Prepared market data
-        """
-        # Extract relevant information
-        # Note: Adjust field names based on actual Polymarket API response
-
-        return {
-            'question': market.get('question', ''),
-            'description': market.get('description', ''),
-            'price': market.get('outcome_prices', [0.5])[0],
-            'volume': market.get('volume', 0),
-            'liquidity': market.get('liquidity', 0),
-            'end_date': market.get('end_date_iso', ''),
-            'market_id': market.get('id', ''),
-            'token_id': market.get('tokens', [{}])[0].get('token_id', ''),
-        }
-
-    def should_trade(self, strategy_signal: Dict, ai_analysis: Dict) -> bool:
-        """
-        Decide if we should execute trade based on signals
-
-        Args:
-            strategy_signal: Signal from strategy
-            ai_analysis: Analysis from AI
-
-        Returns:
-            True if should trade
-        """
-        # Both must agree on direction
-        if strategy_signal.get('action') != ai_analysis.get('action'):
-            logger.debug("Strategy and AI disagree on action")
-            return False
-
-        # Require minimum confidence from AI
-        if ai_analysis.get('confidence', 0) < 70:
-            logger.debug(f"AI confidence too low: {ai_analysis.get('confidence')}%")
-            return False
-
-        return True
-
-    def execute_opportunities(self, opportunities: List[Dict]):
-        """
-        Execute trading opportunities
-
-        Args:
-            opportunities: List of opportunities to execute
-        """
-        # Execute top opportunity (most confident)
+    def execute_opportunities(
+        self,
+        opportunities: List[Dict],
+        equity: float,
+        buying_power: float,
+    ):
+        """Execute the best trading opportunities"""
+        # Sort by confidence
         opportunities_sorted = sorted(
             opportunities,
-            key=lambda x: x['ai_analysis'].get('confidence', 0),
-            reverse=True
+            key=lambda x: x.get("combined_confidence", x.get("ai_analysis", {}).get("confidence", 0)),
+            reverse=True,
         )
 
-        for opp in opportunities_sorted[:1]:  # Execute only 1 at a time
-            self.execute_trade(opp)
+        # Check how many slots we have
+        current_positions = self.alpaca.get_positions()
+        available_slots = self.settings.max_concurrent_positions - len(current_positions)
+        max_this_cycle = min(self.settings.max_trades_per_cycle, available_slots)
 
-    def execute_trade(self, opportunity: Dict):
-        """
-        Execute a single trade
+        executed = 0
+        for opp in opportunities_sorted:
+            if executed >= max_this_cycle:
+                break
+            if self.execute_trade(opp, equity, buying_power):
+                executed += 1
 
-        Args:
-            opportunity: Opportunity data
-        """
+    def execute_trade(
+        self,
+        opportunity: Dict,
+        equity: float,
+        buying_power: float,
+    ) -> bool:
+        """Execute a single trade"""
         try:
-            ai_analysis = opportunity['ai_analysis']
-            action = ai_analysis.get('action')
-            confidence = ai_analysis.get('confidence', 0)
+            symbol = opportunity["symbol"]
+            snapshot = opportunity.get("snapshot", {})
+            price = snapshot.get("price", 0)
+
+            if price <= 0:
+                return False
+
+            # Determine action and confidence
+            ai = opportunity.get("ai_analysis", {})
+            signal = opportunity.get("signal", ai)
+            action = signal.get("action", ai.get("action", "HOLD"))
+            confidence = signal.get("confidence", ai.get("confidence", 0))
+
+            if action == "HOLD":
+                return False
 
             # Calculate position size
-            position_size = self.risk_manager.calculate_position_size(
+            position_size_usd = self.risk_manager.calculate_position_size(
                 confidence=confidence,
-                current_balance=self.current_balance,
-                ai_suggested_size=ai_analysis.get('position_size', 5)
+                buying_power=buying_power,
+                current_equity=equity,
+                ai_suggested_size=signal.get("position_size", ai.get("position_size")),
             )
 
-            # Validate position size
+            # Validate
             is_valid, adjusted_size, reason = self.risk_manager.validate_position_size(
-                position_size,
-                self.current_balance
+                position_size_usd, buying_power, equity
             )
-
             if not is_valid:
-                logger.warning(f"Invalid position size: {reason}")
-                return
+                logger.warning(f"Invalid position for {symbol}: {reason}")
+                return False
 
-            position_size = adjusted_size
+            position_size_usd = adjusted_size
+            qty = self.risk_manager.calculate_qty(position_size_usd, price)
 
-            # Execute order
-            token_id = opportunity.get('token_id')
-            price = opportunity.get('price', 0.5)
+            if qty <= 0:
+                logger.debug(f"Cannot afford {symbol} at ${price:.2f}")
+                return False
 
-            result = self.polymarket.place_order(
-                token_id=token_id,
-                side=action,
-                amount=position_size,
-                price=price,
-                paper_trading=self.settings.paper_trading
+            # Calculate stop loss and take profit prices for bracket order
+            sl_pct = ai.get("stop_loss_pct", self.settings.stop_loss_pct)
+            tp_pct = ai.get("take_profit_pct", self.settings.take_profit_pct)
+
+            if action == "BUY":
+                stop_loss_price = price * (1 + sl_pct / 100)  # sl_pct is negative
+                take_profit_price = price * (1 + tp_pct / 100)
+            else:
+                stop_loss_price = price * (1 - sl_pct / 100)
+                take_profit_price = price * (1 - tp_pct / 100)
+
+            # Place bracket order (market order with TP/SL)
+            side = "buy" if action == "BUY" else "sell"
+            result = self.alpaca.place_bracket_order(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                take_profit_price=take_profit_price,
+                stop_loss_price=stop_loss_price,
             )
 
             if result:
-                # Record trade
                 trade = {
-                    'market': opportunity.get('question', 'Unknown'),
-                    'action': action,
-                    'price': price,
-                    'size': position_size,
-                    'timestamp': datetime.now(),
-                    'strategy': opportunity['signal'].get('strategy', 'Unknown'),
-                    'confidence': confidence,
-                    'reasoning': ai_analysis.get('reasoning', ''),
-                    'order_id': result.get('order_id'),
-                    'pnl': 0  # Will be calculated on exit
+                    "symbol": symbol,
+                    "action": action,
+                    "price": price,
+                    "qty": qty,
+                    "size_usd": qty * price,
+                    "confidence": confidence,
+                    "strategy": signal.get("strategy", "ai"),
+                    "signal_source": opportunity.get("signal_source", "unknown"),
+                    "reasoning": signal.get("reasoning", ai.get("reasoning", "")),
+                    "order_id": result.get("order_id"),
+                    "stop_loss": stop_loss_price,
+                    "take_profit": take_profit_price,
+                    "timestamp": datetime.now(),
+                    "pnl": 0,
                 }
-
                 self.trades.append(trade)
-                self.positions.append({
-                    **trade,
-                    'entry_price': price,
-                    'current_price': price
-                })
 
-                # Log trade
                 log_trade(
                     action=action,
-                    market=trade['market'],
+                    market=symbol,
                     price=price,
-                    size=position_size,
-                    confidence=confidence
+                    size=qty * price,
+                    confidence=confidence,
                 )
 
                 logger.info(
-                    f"✅ Executed {action}: {trade['market'][:50]} @ ${price:.4f} | ${position_size:.2f}"
+                    f"EXECUTED {action} {qty}x {symbol} @ ${price:.2f} "
+                    f"(${qty*price:.2f}) | Conf: {confidence}% | "
+                    f"SL: ${stop_loss_price:.2f} | TP: ${take_profit_price:.2f} | "
+                    f"Source: {opportunity.get('signal_source', '?')}"
                 )
-
-                # Update balance for paper trading
-                if self.settings.paper_trading:
-                    self.current_balance -= position_size
+                return True
 
         except Exception as e:
-            logger.error(f"Error executing trade: {e}")
+            logger.error(f"Error executing trade for {opportunity.get('symbol', '?')}: {e}")
+        return False
 
     def manage_positions(self):
-        """Monitor and manage open positions"""
-        for position in self.positions[:]:
+        """Monitor and manage open positions with trailing stops"""
+        positions = self.alpaca.get_positions()
+
+        for pos in positions:
             try:
-                # Get current price
-                token_id = position.get('token_id')
-                if token_id:
-                    current_price = self.polymarket.get_midpoint_price(token_id)
-                    if current_price:
-                        position['current_price'] = current_price
+                symbol = pos["symbol"]
+                entry_price = pos["avg_entry_price"]
+                current_price = pos["current_price"]
+                pnl_pct = pos["unrealized_plpc"] * 100
 
-                # Check stop loss
-                should_stop, reason = self.risk_manager.should_stop_loss(
-                    entry_price=position['entry_price'],
-                    current_price=position['current_price'],
-                    position_type=position['action']
+                # Check trailing stop
+                should_trail, trail_reason = self.risk_manager.update_trailing_stop(
+                    symbol=symbol,
+                    entry_price=entry_price,
+                    current_price=current_price,
+                    position_type=pos["side"],
                 )
 
-                if should_stop:
-                    logger.warning(f"Stop loss triggered: {reason}")
-                    self.close_position(position, reason="Stop Loss")
+                if should_trail:
+                    logger.info(f"TRAILING STOP {symbol}: {trail_reason}")
+                    if self.alpaca.close_position(symbol):
+                        self.risk_manager.clear_trailing_stop(symbol)
+                        self.risk_manager.record_trade(pos["unrealized_pl"])
+                        self.risk_manager.record_day_trade()
+                        logger.info(
+                            f"Closed {symbol} via trailing stop | P&L: ${pos['unrealized_pl']:+.2f}"
+                        )
                     continue
 
-                # Check take profit
-                should_exit, reason = self.risk_manager.should_take_profit(
-                    entry_price=position['entry_price'],
-                    current_price=position['current_price'],
-                    position_type=position['action']
-                )
-
-                if should_exit:
-                    logger.info(f"Take profit triggered: {reason}")
-                    self.close_position(position, reason="Take Profit")
-                    continue
+                # Note: Bracket orders already have SL/TP built in via Alpaca
+                # The trailing stop above is an enhancement on top of that
 
             except Exception as e:
-                logger.error(f"Error managing position: {e}")
+                logger.error(f"Error managing position {pos.get('symbol', '?')}: {e}")
 
-    def close_position(self, position: Dict, reason: str = "Manual"):
-        """
-        Close an open position
-
-        Args:
-            position: Position to close
-            reason: Reason for closing
-        """
-        try:
-            # Calculate P&L
-            entry_price = position['entry_price']
-            exit_price = position['current_price']
-            size = position['size']
-
-            if position['action'] == 'BUY':
-                pnl = (exit_price - entry_price) * size / entry_price
-            else:
-                pnl = (entry_price - exit_price) * size / entry_price
-
-            # Update trade record
-            for trade in self.trades:
-                if trade.get('order_id') == position.get('order_id'):
-                    trade['pnl'] = pnl
-                    trade['exit_price'] = exit_price
-                    trade['exit_time'] = datetime.now()
-                    trade['exit_reason'] = reason
-
-            # Record with risk manager
-            self.risk_manager.record_trade(pnl)
-
-            # Remove from positions
-            self.positions.remove(position)
-
-            # Update balance (paper trading)
-            if self.settings.paper_trading:
-                self.current_balance += (size + pnl)
-
-            logger.info(
-                f"Closed position: {position['market'][:50]} | "
-                f"P&L: ${pnl:+.2f} | Reason: {reason}"
-            )
-
-        except Exception as e:
-            logger.error(f"Error closing position: {e}")
-
-    # API methods for Telegram bot
+    # ── API methods for Telegram bot ──
 
     def get_status(self) -> Dict:
         """Get bot status"""
+        account = self.alpaca.get_account()
+        positions = self.alpaca.get_positions()
+        clock = self.alpaca.get_market_clock()
+
         return {
-            'status': 'Running' if self.is_running and not self.is_paused else 'Paused' if self.is_paused else 'Stopped',
-            'balance': self.current_balance,
-            'daily_pnl': self.risk_manager.daily_loss,
-            'open_positions': len(self.positions),
-            'trades_today': self.risk_manager.daily_trades,
-            'mode': 'PAPER TRADING' if self.settings.paper_trading else 'LIVE TRADING',
-            'last_update': datetime.now().isoformat()
+            "status": (
+                "Running" if self.is_running and not self.is_paused
+                else "Paused" if self.is_paused
+                else "Stopped"
+            ),
+            "equity": account.get("equity", 0) if account else 0,
+            "buying_power": account.get("buying_power", 0) if account else 0,
+            "day_trade_count": account.get("day_trade_count", 0) if account else 0,
+            "open_positions": len(positions),
+            "trades_today": self.risk_manager.daily_trades,
+            "daily_pnl": self.risk_manager.daily_loss + self.risk_manager.daily_profit,
+            "mode": self.settings.trading_mode.upper(),
+            "market_open": clock.get("is_open", False) if clock else False,
+            "paper": "paper" in self.settings.alpaca_base_url,
+            "last_update": datetime.now().isoformat(),
         }
 
     def get_balance(self) -> Dict:
         """Get balance info"""
-        in_positions = sum(p.get('size', 0) for p in self.positions)
-        total_pnl = sum(t.get('pnl', 0) for t in self.trades)
+        account = self.alpaca.get_account()
+        if not account:
+            return {"error": "Cannot fetch account"}
 
+        total_pnl = sum(t.get("pnl", 0) for t in self.trades)
         return {
-            'usdc': self.current_balance,
-            'in_positions': in_positions,
-            'available': self.current_balance - in_positions,
-            'total': self.current_balance + in_positions,
-            'pnl': total_pnl,
-            'pnl_pct': (total_pnl / self.initial_balance) * 100 if self.initial_balance > 0 else 0
+            "equity": account["equity"],
+            "buying_power": account["buying_power"],
+            "cash": account["cash"],
+            "portfolio_value": account["portfolio_value"],
+            "total_pnl": total_pnl,
         }
 
     def get_positions(self) -> List[Dict]:
-        """Get open positions"""
-        return self.positions
+        """Get open positions from Alpaca"""
+        return self.alpaca.get_positions()
 
     def get_recent_trades(self, limit: int = 10) -> List[Dict]:
         """Get recent trades"""
         return sorted(
             self.trades,
-            key=lambda x: x.get('timestamp', datetime.min),
-            reverse=True
+            key=lambda x: x.get("timestamp", datetime.min),
+            reverse=True,
         )[:limit]
 
     def get_statistics(self) -> Dict:
         """Get trading statistics"""
-        completed_trades = [t for t in self.trades if 'exit_time' in t]
-        winning_trades = [t for t in completed_trades if t.get('pnl', 0) > 0]
-        losing_trades = [t for t in completed_trades if t.get('pnl', 0) < 0]
+        completed = [t for t in self.trades if t.get("pnl", 0) != 0]
+        winners = [t for t in completed if t["pnl"] > 0]
+        losers = [t for t in completed if t["pnl"] < 0]
 
         return {
-            'total_trades': len(completed_trades),
-            'winning_trades': len(winning_trades),
-            'losing_trades': len(losing_trades),
-            'win_rate': (len(winning_trades) / len(completed_trades) * 100) if completed_trades else 0,
-            'total_pnl': sum(t.get('pnl', 0) for t in completed_trades),
-            'avg_win': sum(t.get('pnl', 0) for t in winning_trades) / len(winning_trades) if winning_trades else 0,
-            'avg_loss': sum(t.get('pnl', 0) for t in losing_trades) / len(losing_trades) if losing_trades else 0,
-            'best_trade': max([t.get('pnl', 0) for t in completed_trades]) if completed_trades else 0,
-            'worst_trade': min([t.get('pnl', 0) for t in completed_trades]) if completed_trades else 0,
-            'trades_today': self.risk_manager.daily_trades,
-            'pnl_today': self.risk_manager.daily_loss,
-            'win_rate_today': 0  # TODO: Calculate
+            "total_trades": len(self.trades),
+            "completed_trades": len(completed),
+            "winning": len(winners),
+            "losing": len(losers),
+            "win_rate": (len(winners) / len(completed) * 100) if completed else 0,
+            "total_pnl": sum(t.get("pnl", 0) for t in completed),
+            "avg_win": sum(t["pnl"] for t in winners) / len(winners) if winners else 0,
+            "avg_loss": sum(t["pnl"] for t in losers) / len(losers) if losers else 0,
+            "best_trade": max((t["pnl"] for t in completed), default=0),
+            "worst_trade": min((t["pnl"] for t in completed), default=0),
+            "trades_today": self.risk_manager.daily_trades,
+            "pnl_today": self.risk_manager.daily_loss + self.risk_manager.daily_profit,
         }
 
     def get_strategies(self) -> Dict[str, bool]:
         """Get enabled strategies"""
-        strategies = {}
-        for name, strategy in self.strategy_manager.strategies.items():
-            strategies[name] = strategy.enabled
-        return strategies
+        return {
+            name: strategy.enabled
+            for name, strategy in self.strategy_manager.strategies.items()
+        }
 
     def get_risk_metrics(self) -> Dict:
         """Get risk metrics"""
