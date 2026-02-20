@@ -3,7 +3,7 @@ Configuration settings for Aggressive Stock Trading Bot
 """
 from pydantic_settings import BaseSettings
 from pydantic import Field
-from typing import Optional
+from typing import Optional, List
 
 
 class Settings(BaseSettings):
@@ -65,8 +65,9 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"  # Ignore unknown env vars (e.g. old ANTHROPIC_API_KEY)
 
-    def get_watchlist_symbols(self) -> list[str]:
+    def get_watchlist_symbols(self) -> List[str]:
         """Parse watchlist string into list of symbols"""
         return [s.strip().upper() for s in self.watchlist.split(",") if s.strip()]
 

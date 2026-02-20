@@ -343,6 +343,10 @@ TP: ${trade_info.get('take_profit', 0):.2f}
     def start(self):
         """Start the Telegram bot"""
         try:
+            # Create event loop for this thread (required on Python 3.8)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
             self.application = Application.builder().token(
                 self.settings.telegram_bot_token
             ).build()

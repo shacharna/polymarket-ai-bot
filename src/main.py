@@ -16,7 +16,7 @@ sys.path.insert(0, str(project_root))
 from config.settings import get_settings
 from src.monitoring.logger import setup_logging
 from src.trading.engine import TradingEngine
-from src.telegram.bot import TradingTelegramBot
+from src.telegram_bot.bot import TradingTelegramBot
 
 
 class StockTradingBot:

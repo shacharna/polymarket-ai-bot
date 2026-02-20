@@ -2,7 +2,7 @@
 Risk Management System - Aggressive Mode
 Enforces trading limits while allowing high-risk/high-reward trades
 """
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from datetime import datetime, timedelta
 from loguru import logger
 from config.settings import get_settings
@@ -46,7 +46,7 @@ class RiskManager:
                 dt for dt in self.day_trades_5d if dt > cutoff
             ]
 
-    def can_trade(self, current_equity: float = None) -> tuple[bool, str]:
+    def can_trade(self, current_equity: float = None) -> Tuple[bool, str]:
         """
         Check if trading is allowed
 
@@ -70,7 +70,7 @@ class RiskManager:
 
         return True, "Trading allowed"
 
-    def check_pdt_limit(self) -> tuple[bool, str]:
+    def check_pdt_limit(self) -> Tuple[bool, str]:
         """
         Check Pattern Day Trader rule.
         If account < $25k, limited to 3 day trades per 5 business days.
@@ -102,7 +102,7 @@ class RiskManager:
         position_size_usd: float,
         buying_power: float,
         current_equity: float,
-    ) -> tuple[bool, float, str]:
+    ) -> Tuple[bool, float, str]:
         """
         Validate and adjust position size for aggressive trading
 
@@ -190,7 +190,7 @@ class RiskManager:
         entry_price: float,
         current_price: float,
         position_type: str,
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         """Check if stop loss should trigger"""
         if position_type.upper() in ("BUY", "LONG"):
             loss_pct = ((current_price - entry_price) / entry_price) * 100
@@ -207,7 +207,7 @@ class RiskManager:
         entry_price: float,
         current_price: float,
         position_type: str,
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         """Check if take profit target is reached"""
         if position_type.upper() in ("BUY", "LONG"):
             profit_pct = ((current_price - entry_price) / entry_price) * 100
@@ -225,7 +225,7 @@ class RiskManager:
         entry_price: float,
         current_price: float,
         position_type: str,
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         """
         Update and check trailing stop for a position.
         Activates after +activation_pct from entry, then trails at distance_pct below peak.

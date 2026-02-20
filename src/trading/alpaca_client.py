@@ -24,6 +24,7 @@ class AlpacaClient:
     def _initialize_client(self):
         """Initialize the Alpaca REST client"""
         try:
+            logger.debug(f"Initializing Alpaca client with base_url: {self.settings.alpaca_base_url}")
             self.client = REST(
                 key_id=self.settings.alpaca_api_key,
                 secret_key=self.settings.alpaca_secret_key,
@@ -344,6 +345,87 @@ class AlpacaClient:
         except Exception as e:
             logger.error(f"Error fetching market clock: {e}")
             return None
+
+    def get_most_active_stocks(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Get the most active stocks by volume and biggest movers.
+        Scans the entire market for opportunities.
+        """
+        try:
+            # Get all tradeable assets
+            assets = self.client.list_assets(status="active", asset_class="us_equity")
+
+            # Filter to common stocks that are tradeable and shortable
+            tradeable = [
+                a.symbol for a in assets
+                if a.tradable and a.exchange in ("NYSE", "NASDAQ")
+                and not a.symbol.isdigit()
+                and len(a.symbol) <= 5
+                and "." not in a.symbol
+            ]
+
+            # Get snapshots in batches (API limit)
+            all_movers = []
+            batch_size = 100
+
+            for i in range(0, min(len(tradeable), 500), batch_size):
+                batch = tradeable[i:i + batch_size]
+                try:
+                    snapshots = self.client.get_snapshots(batch)
+                    for symbol, snap in snapshots.items():
+                        try:
+                            daily_bar = snap.daily_bar
+                            prev_daily_bar = snap.prev_daily_bar
+                            latest_trade = snap.latest_trade
+
+                            if not daily_bar or not prev_daily_bar or not latest_trade:
+                                continue
+
+                            price = float(latest_trade.p)
+                            prev_close = float(prev_daily_bar.c)
+                            day_open = float(daily_bar.o)
+                            volume = int(daily_bar.v)
+
+                            if price < 2.0 or prev_close <= 0 or volume < 100000:
+                                continue
+
+                            change_pct = ((price - prev_close) / prev_close) * 100
+                            gap_pct = ((day_open - prev_close) / prev_close) * 100
+                            intraday_pct = ((price - day_open) / day_open) * 100 if day_open > 0 else 0
+
+                            all_movers.append({
+                                "symbol": symbol,
+                                "price": price,
+                                "day_open": day_open,
+                                "day_high": float(daily_bar.h),
+                                "day_low": float(daily_bar.l),
+                                "day_volume": volume,
+                                "prev_close": prev_close,
+                                "change_pct": change_pct,
+                                "gap_pct": gap_pct,
+                                "intraday_change_pct": intraday_pct,
+                                "abs_change": abs(change_pct),
+                            })
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.debug(f"Error fetching snapshot batch: {e}")
+                    continue
+
+            # Sort by absolute change (biggest movers first)
+            all_movers.sort(key=lambda x: x["abs_change"], reverse=True)
+
+            # Return top movers
+            result = all_movers[:limit]
+            logger.info(
+                f"Scanned market: found {len(all_movers)} active stocks, "
+                f"returning top {len(result)} movers"
+            )
+            return result
+
+        except Exception as e:
+            logger.error(f"Error scanning market: {e}")
+            return []
 
     def get_open_orders(self) -> List[Dict[str, Any]]:
         """Get all open orders"""
