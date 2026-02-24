@@ -2,8 +2,10 @@
 Aggressive Stock Trading Bot - Main Entry Point
 Trades US stocks via Alpaca with AI-powered aggressive strategies
 """
+import os
 import sys
 import signal
+import shutil
 from pathlib import Path
 from loguru import logger
 from threading import Thread
@@ -12,6 +14,24 @@ import asyncio
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+# Fix SSL certificate issue on Windows with non-ASCII paths
+# (Hebrew/Unicode chars in path break curl's CA bundle lookup)
+try:
+    import certifi
+    ca_path = certifi.where()
+    # If path has non-ASCII chars, copy cacert.pem to a safe location
+    if not ca_path.isascii():
+        safe_dir = Path(os.environ.get("TEMP", "/tmp")) / "ssl_certs"
+        safe_dir.mkdir(exist_ok=True)
+        safe_ca = safe_dir / "cacert.pem"
+        if not safe_ca.exists():
+            shutil.copy2(ca_path, safe_ca)
+        os.environ["CURL_CA_BUNDLE"] = str(safe_ca)
+        os.environ["REQUESTS_CA_BUNDLE"] = str(safe_ca)
+        os.environ["SSL_CERT_FILE"] = str(safe_ca)
+except Exception:
+    pass
 
 from config.settings import get_settings
 from src.monitoring.logger import setup_logging

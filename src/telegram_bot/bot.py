@@ -10,8 +10,54 @@ from telegram.ext import (
 )
 from loguru import logger
 from config.settings import get_settings
+from src.monitoring.security_logger import get_security_logger
 from typing import Optional
+from functools import wraps
+from datetime import datetime, timedelta
+from collections import defaultdict
 import asyncio
+
+
+def require_authorization(func):
+    """
+    Security decorator to check if user is authorized.
+    Blocks unauthorized users and logs security events.
+    """
+    @wraps(func)
+    async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        security_logger = get_security_logger()
+        user_chat_id = str(update.message.chat.id)
+        authorized_chat_id = str(self.settings.telegram_chat_id)
+        username = update.message.from_user.username if update.message.from_user else None
+
+        # Check authorization
+        if user_chat_id != authorized_chat_id:
+            security_logger.log_unauthorized_access(
+                chat_id=user_chat_id,
+                command=update.message.text,
+                username=username
+            )
+            await update.message.reply_text(
+                "⛔ Unauthorized. This bot is private."
+            )
+            return
+
+        # Check rate limit
+        command_name = func.__name__.replace("_command", "")
+        allowed, message = self.check_rate_limit(command_name)
+        if not allowed:
+            wait_time = int(message.split("Wait ")[1].split("s")[0]) if "Wait" in message else 0
+            security_logger.log_rate_limit_violation(
+                command=command_name,
+                remaining_time=wait_time,
+                chat_id=user_chat_id
+            )
+            await update.message.reply_text(f"⏱️ {message}")
+            return
+
+        return await func(self, update, context)
+
+    return wrapper
 
 
 class TradingTelegramBot:
@@ -22,8 +68,49 @@ class TradingTelegramBot:
         self.trading_engine = trading_engine
         self.application: Optional[Application] = None
         self.is_running = False
-        logger.info("Telegram bot initialized")
 
+        # Rate limiting for DDoS protection
+        self.command_history = defaultdict(list)  # {command: [timestamps]}
+        self.rate_limits = {
+            "scan": (1, 300),       # 1 per 5 minutes (expensive AI operation)
+            "closeall": (1, 60),    # 1 per minute (critical operation)
+            "balance": (10, 60),    # 10 per minute
+            "positions": (10, 60),  # 10 per minute
+            "status": (20, 60),     # 20 per minute
+            "trades": (10, 60),     # 10 per minute
+            "stats": (5, 60),       # 5 per minute
+        }
+
+        logger.info("Telegram bot initialized with auth & rate limiting")
+
+    def check_rate_limit(self, command_name):
+        # type: (str) -> tuple[bool, str]
+        """
+        Check if command is within rate limit.
+        Returns: (allowed: bool, message: str)
+        """
+        if command_name not in self.rate_limits:
+            return True, ""
+
+        max_calls, window_seconds = self.rate_limits[command_name]
+        now = datetime.now()
+        cutoff = now - timedelta(seconds=window_seconds)
+
+        # Clean old timestamps
+        self.command_history[command_name] = [
+            ts for ts in self.command_history[command_name] if ts > cutoff
+        ]
+
+        # Check limit
+        if len(self.command_history[command_name]) >= max_calls:
+            wait_time = window_seconds - int((now - self.command_history[command_name][0]).total_seconds())
+            return False, f"Rate limit exceeded. Wait {wait_time}s before retrying."
+
+        # Record this call
+        self.command_history[command_name].append(now)
+        return True, ""
+
+    @require_authorization
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         paper = "paper" in self.settings.alpaca_base_url
@@ -52,6 +139,7 @@ class TradingTelegramBot:
 
         await update.message.reply_text(message, parse_mode="Markdown")
 
+    @require_authorization
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command"""
         try:
@@ -80,6 +168,7 @@ Day Trades: {status.get('day_trade_count', 0)}/3"""
             logger.error(f"Error in status command: {e}")
             await update.message.reply_text(f"Error: {str(e)}")
 
+    @require_authorization
     async def balance_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /balance command"""
         try:
@@ -105,6 +194,7 @@ Session P&L: ${balance.get('total_pnl', 0):+.2f}"""
             logger.error(f"Error in balance command: {e}")
             await update.message.reply_text(f"Error: {str(e)}")
 
+    @require_authorization
     async def positions_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /positions command"""
         try:
@@ -140,6 +230,7 @@ Session P&L: ${balance.get('total_pnl', 0):+.2f}"""
             logger.error(f"Error in positions command: {e}")
             await update.message.reply_text(f"Error: {str(e)}")
 
+    @require_authorization
     async def trades_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /trades command"""
         try:
@@ -167,6 +258,7 @@ Session P&L: ${balance.get('total_pnl', 0):+.2f}"""
             logger.error(f"Error in trades command: {e}")
             await update.message.reply_text(f"Error: {str(e)}")
 
+    @require_authorization
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stats command"""
         try:
@@ -200,6 +292,7 @@ Session P&L: ${balance.get('total_pnl', 0):+.2f}"""
             logger.error(f"Error in stats command: {e}")
             await update.message.reply_text(f"Error: {str(e)}")
 
+    @require_authorization
     async def scan_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scan command - trigger AI market scan"""
         try:
@@ -222,6 +315,7 @@ Session P&L: ${balance.get('total_pnl', 0):+.2f}"""
             logger.error(f"Error in scan command: {e}")
             await update.message.reply_text(f"Error: {str(e)}")
 
+    @require_authorization
     async def watchlist_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /watchlist command"""
         try:
@@ -247,6 +341,7 @@ Session P&L: ${balance.get('total_pnl', 0):+.2f}"""
         except Exception as e:
             await update.message.reply_text(f"Error: {str(e)}")
 
+    @require_authorization
     async def strategies_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /strategies command"""
         try:
@@ -265,6 +360,7 @@ Session P&L: ${balance.get('total_pnl', 0):+.2f}"""
         except Exception as e:
             await update.message.reply_text(f"Error: {str(e)}")
 
+    @require_authorization
     async def risk_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /risk command"""
         try:
@@ -293,6 +389,7 @@ Session P&L: ${balance.get('total_pnl', 0):+.2f}"""
         except Exception as e:
             await update.message.reply_text(f"Error: {str(e)}")
 
+    @require_authorization
     async def mode_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /mode command - show trading parameters"""
         s = self.settings
@@ -314,33 +411,74 @@ Strategy-Only: {'Yes' if s.allow_strategy_only_trades else 'No'}"""
 
         await update.message.reply_text(message, parse_mode="Markdown")
 
+    @require_authorization
     async def closeall_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /closeall command - emergency close all positions"""
+        """Handle /closeall command - requires explicit confirmation"""
         try:
             if not self.trading_engine:
                 await update.message.reply_text("Trading engine not connected")
                 return
 
+            # Check if confirmation was provided
+            if not context.args or context.args[0] != "CONFIRM":
+                positions = self.trading_engine.get_positions()
+                if not positions:
+                    await update.message.reply_text("No open positions to close")
+                    return
+
+                total_value = sum(p.get('market_value', 0) for p in positions)
+                total_pl = sum(p.get('unrealized_pl', 0) for p in positions)
+
+                message = f"""⚠️ **WARNING: Close All Positions**
+
+You have {len(positions)} open positions worth ${total_value:,.2f}
+Unrealized P&L: ${total_pl:+.2f}
+
+This will close ALL positions immediately at market price.
+
+To confirm, send:
+`/closeall CONFIRM`
+
+⏰ You have 60 seconds to confirm."""
+
+                await update.message.reply_text(message, parse_mode="Markdown")
+                return
+
+            # Confirmed - execute closeall
             result = self.trading_engine.alpaca.close_all_positions()
             if result:
-                await update.message.reply_text("All positions closed!")
+                await update.message.reply_text("✅ All positions closed!")
+
+                # Log critical operation
+                security_logger = get_security_logger()
+                username = update.message.from_user.username if update.message.from_user else "unknown"
+                security_logger.log_critical_operation(
+                    operation="CLOSE_ALL_POSITIONS",
+                    user=f"@{username} (chat_id: {update.message.chat.id})",
+                    details=f"Closed {len(positions)} positions"
+                )
+                logger.warning(f"🚨 All positions closed by user via Telegram")
             else:
-                await update.message.reply_text("Failed to close positions")
+                await update.message.reply_text("❌ Failed to close positions")
+
         except Exception as e:
             await update.message.reply_text(f"Error: {str(e)}")
 
+    @require_authorization
     async def pause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /pause command"""
         if self.trading_engine:
             self.trading_engine.pause()
             await update.message.reply_text("Trading paused. Use /resume to continue.")
 
+    @require_authorization
     async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /resume command"""
         if self.trading_engine:
             self.trading_engine.resume()
             await update.message.reply_text("Trading resumed.")
 
+    @require_authorization
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
         await self.start_command(update, context)

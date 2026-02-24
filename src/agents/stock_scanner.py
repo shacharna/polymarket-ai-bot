@@ -38,7 +38,7 @@ class StockScannerAgent:
         self.dynamic_watchlist = []  # type: List[str]
         self.scan_results = []  # type: List[Dict[str, Any]]
         self.last_scan_time = None  # type: Optional[datetime]
-        self.scan_interval_minutes = 15  # Re-scan every 15 minutes
+        self.scan_interval_minutes = 30  # Pi: scan every 30min to reduce load
 
         logger.info("Stock Scanner Agent initialized (Yahoo Finance + Web + AI)")
 
@@ -55,18 +55,18 @@ class StockScannerAgent:
         """
         Full market scan combining multiple data sources:
         1. Yahoo Finance trending/most active
-        2. Yahoo Finance gainers/losers
+        2. Yahoo Finance gainers/losers (SKIPPED if we have enough from trending+alpaca)
         3. Yahoo Finance news headlines
         4. Alpaca market movers (if provided)
         5. AI analysis to select the best opportunities
+
+        Pi optimizations: Skip expensive API calls if we have enough candidates
         """
         logger.info("Starting full market scan...")
 
         # Gather data from multiple sources
         yahoo_trending = self._get_yahoo_trending()
-        yahoo_gainers = self._get_yahoo_gainers_losers()
         yahoo_news = self._get_yahoo_news()
-        sector_movers = self._get_sector_performance()
 
         # Combine all stock candidates
         all_candidates = {}  # type: Dict[str, Dict[str, Any]]
@@ -77,20 +77,26 @@ class StockScannerAgent:
             if symbol:
                 all_candidates[symbol] = stock
 
-        # Add Yahoo gainers/losers
-        for stock in yahoo_gainers:
-            symbol = stock.get("symbol", "")
-            if symbol and symbol not in all_candidates:
-                all_candidates[symbol] = stock
-            elif symbol:
-                all_candidates[symbol].update(stock)
-
         # Add Alpaca movers
         if alpaca_movers:
             for stock in alpaca_movers:
                 symbol = stock.get("symbol", "")
                 if symbol and symbol not in all_candidates:
                     all_candidates[symbol] = stock
+
+        # Pi optimization: Only scrape Yahoo gainers/losers if we don't have enough candidates
+        # This saves 3 HTTP requests and BeautifulSoup parsing
+        if len(all_candidates) < 20:
+            logger.info("< 20 candidates, fetching Yahoo gainers/losers...")
+            yahoo_gainers = self._get_yahoo_gainers_losers()
+            for stock in yahoo_gainers:
+                symbol = stock.get("symbol", "")
+                if symbol and symbol not in all_candidates:
+                    all_candidates[symbol] = stock
+                elif symbol:
+                    all_candidates[symbol].update(stock)
+        else:
+            logger.info(f"Skipping Yahoo gainers/losers (already have {len(all_candidates)} candidates)")
 
         # Also always include the fixed watchlist
         for symbol in self.settings.get_watchlist_symbols():
@@ -104,8 +110,8 @@ class StockScannerAgent:
         # Enrich candidates with Yahoo Finance data
         enriched = self._enrich_with_yfinance(list(all_candidates.values()))
 
-        # Send everything to AI for analysis
-        picks = self._ai_select_stocks(enriched, yahoo_news, sector_movers)
+        # Send everything to AI for analysis (no sector data - Pi optimization)
+        picks = self._ai_select_stocks(enriched, yahoo_news, [])
 
         # Update state
         self.dynamic_watchlist = [p.get("symbol", "") for p in picks if p.get("symbol")]
@@ -353,7 +359,8 @@ class StockScannerAgent:
 
         try:
             # Batch download - much faster than individual calls
-            tickers_str = " ".join(needs_data[:50])  # Limit to 50 to avoid timeout
+            # Pi optimization: Limit to 30 stocks to reduce memory and CPU
+            tickers_str = " ".join(needs_data[:30])
             data = yf.download(
                 tickers_str, period="5d", interval="1d", progress=False
             )
@@ -411,22 +418,8 @@ class StockScannerAgent:
                 except Exception:
                     pass
 
-                # Get quick news for this stock
-                try:
-                    ticker = yf.Ticker(symbol)
-                    info = ticker.info
-                    enriched_stock["market_cap"] = info.get("marketCap", 0)
-                    enriched_stock["sector"] = info.get("sector", "")
-                    enriched_stock["short_name"] = info.get("shortName", symbol)
-
-                    # Get recent news
-                    stock_news = ticker.news
-                    if stock_news:
-                        enriched_stock["recent_headlines"] = [
-                            n.get("title", "") for n in stock_news[:3]
-                        ]
-                except Exception:
-                    pass
+                # Pi optimization: Skip individual ticker.info and ticker.news calls
+                # These are slow and memory-intensive. We have enough data without them.
 
                 enriched.append(enriched_stock)
 
@@ -453,9 +446,10 @@ class StockScannerAgent:
         try:
             prompt = self._build_full_prompt(candidates, news, sectors)
 
+            # Pi optimization: Reduce max_tokens to save cost and reduce response time
             response = self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=2000,
+                max_tokens=1200,
                 messages=[
                     {"role": "system", "content": self._system_prompt()},
                     {"role": "user", "content": prompt},
@@ -503,23 +497,23 @@ class StockScannerAgent:
         # type: (List[Dict[str, Any]], List[Dict[str, str]], List[Dict[str, Any]]) -> str
         """Build a comprehensive prompt with all market data"""
 
-        # Market context
+        # Market context (Pi: removed sector performance to save tokens)
         sector_text = ""
         if sectors:
             sector_text = "\n**Sector Performance Today:**\n"
             for s in sectors:
                 sector_text += f"  {s['sector']} ({s['etf']}): {s['change_pct']:+.2f}%\n"
 
-        # News
+        # News (Pi optimization: reduced from 15 to 8 headlines)
         news_text = ""
         if news:
             news_text = "\n**Latest Market News:**\n"
-            for n in news[:15]:
+            for n in news[:8]:
                 news_text += f"  - {n['title']} ({n.get('publisher', '')})\n"
 
-        # Stock data
+        # Stock data (Pi optimization: reduced from 40 to 25 stocks to save tokens)
         stocks_text = "\n**Stock Candidates:**\n"
-        for s in candidates[:40]:  # Limit to 40 for token efficiency
+        for s in candidates[:25]:
             symbol = s.get("symbol", "?")
             price = s.get("price", 0)
             change = s.get("change_pct", 0)
@@ -551,7 +545,8 @@ class StockScannerAgent:
 
             stocks_text += line + "\n"
 
-        max_picks = 15
+        # Pi optimization: Reduced from 15 to 10 picks to save tokens
+        max_picks = 10
         return f"""Analyze the market and select the TOP {max_picks} stocks to trade TODAY.
 
 {sector_text}

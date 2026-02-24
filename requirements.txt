@@ -12,6 +12,7 @@ openai>=1.12.0
 yfinance>=0.2.31
 multitasking<0.0.12
 beautifulsoup4>=4.12.0
+polygon-api-client>=1.12.0  # Polygon.io for technical indicators
 
 # Telegram bot
 python-telegram-bot==20.7
