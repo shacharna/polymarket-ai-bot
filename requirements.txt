@@ -2,12 +2,17 @@
 python-dotenv==1.0.0
 requests==2.31.0
 
-# Polymarket integration
-py-clob-client==0.32.0
-web3==6.14.0
+# Alpaca Markets integration
+alpaca-trade-api>=3.0.0
 
 # AI/ML
-anthropic==0.18.1
+openai>=1.12.0
+
+# Market data & web scraping
+yfinance>=0.2.31
+multitasking<0.0.12
+beautifulsoup4>=4.12.0
+polygon-api-client>=1.12.0  # Polygon.io for technical indicators
 
 # Telegram bot
 python-telegram-bot==20.7

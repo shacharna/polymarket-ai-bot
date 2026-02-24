@@ -1,1 +1,1 @@
-"""Trading module for Polymarket integration"""
+"""Trading module for Alpaca stock trading"""
