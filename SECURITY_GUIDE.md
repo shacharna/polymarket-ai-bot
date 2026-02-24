@@ -137,7 +137,7 @@ On Windows:
 Check if `.env` was ever committed to git:
 
 ```bash
-cd polymarket-ai-bot
+cd stock-trading-bot
 git log --all --full-history -- .env
 ```
 
@@ -255,7 +255,7 @@ sudo adduser tradingbot --disabled-password
 
 # Move bot files
 sudo mkdir -p /opt/trading-bot
-sudo cp -r ~/polymarket-ai-bot/* /opt/trading-bot/
+sudo cp -r ~/stock-trading-bot/* /opt/trading-bot/
 sudo chown -R tradingbot:tradingbot /opt/trading-bot
 sudo chmod 600 /opt/trading-bot/.env
 

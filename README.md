@@ -26,6 +26,7 @@ An AI-powered autonomous stock trading bot that trades US stocks via Alpaca Mark
 - Python 3.8+
 - OpenAI GPT-4o (AI analysis and stock scanning)
 - Alpaca Markets API (broker - commission-free US stock trading)
+- Polygon.io Massive API (technical indicators - RSI, SMA, MACD)
 - Yahoo Finance / yfinance (market data, news, sector performance)
 - Python Telegram Bot (remote control)
 - Pydantic Settings (configuration)
@@ -43,7 +44,7 @@ An AI-powered autonomous stock trading bot that trades US stocks via Alpaca Mark
 
 ```bash
 git clone <your-repo-url>
-cd polymarket-ai-bot
+cd stock-trading-bot
 python -m venv venv
 source venv/bin/activate  # or venv\Scripts\activate on Windows
 pip install -r requirements.txt
@@ -75,7 +76,7 @@ python src/main.py
 ## Project Structure
 
 ```
-polymarket-ai-bot/
+stock-trading-bot/
 ├── src/
 │   ├── agents/
 │   │   ├── ai_agent.py          # GPT-4o trading analysis
@@ -83,18 +84,23 @@ polymarket-ai-bot/
 │   ├── trading/
 │   │   ├── alpaca_client.py     # Alpaca broker API
 │   │   ├── engine.py            # Main trading engine
-│   │   ├── risk_manager.py      # Aggressive risk management
-│   │   └── strategies.py        # 4 trading strategies
+│   │   ├── risk_manager.py      # Risk management
+│   │   ├── strategies.py        # 4 trading strategies
+│   │   └── polygon_client.py    # Polygon.io technical indicators
 │   ├── telegram_bot/
 │   │   └── bot.py               # Telegram remote control
 │   ├── monitoring/
-│   │   └── logger.py            # Logging system
+│   │   ├── logger.py            # Logging system
+│   │   └── security_logger.py   # Security event logging
 │   └── main.py                  # Entry point
 ├── config/
 │   └── settings.py              # Configuration management
+├── scripts/
+│   └── monitor_resources.py     # Resource monitoring for Raspberry Pi
 ├── docs/                        # Documentation
 ├── requirements.txt             # Python dependencies
 ├── .env.example                 # Example configuration
+├── SECURITY_GUIDE.md            # Security hardening guide
 └── .gitignore                   # Git ignore rules
 ```
 
