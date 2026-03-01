@@ -20,18 +20,32 @@ sys.path.insert(0, str(project_root))
 try:
     import certifi
     ca_path = certifi.where()
-    # If path has non-ASCII chars, copy cacert.pem to a safe location
-    if not ca_path.isascii():
-        safe_dir = Path(os.environ.get("TEMP", "/tmp")) / "ssl_certs"
+
+    # Always use safe path on Windows to avoid Unicode issues
+    if os.name == 'nt':  # Windows
+        # Use Windows TEMP directory (should be ASCII-safe)
+        safe_dir = Path(os.environ.get("TEMP", "C:\\Windows\\Temp")) / "ssl_certs"
         safe_dir.mkdir(exist_ok=True)
         safe_ca = safe_dir / "cacert.pem"
-        if not safe_ca.exists():
+
+        # Always copy certificate to safe location
+        if not safe_ca.exists() or os.path.getsize(safe_ca) == 0:
             shutil.copy2(ca_path, safe_ca)
-        os.environ["CURL_CA_BUNDLE"] = str(safe_ca)
-        os.environ["REQUESTS_CA_BUNDLE"] = str(safe_ca)
-        os.environ["SSL_CERT_FILE"] = str(safe_ca)
-except Exception:
-    pass
+            print(f"SSL: Copied certificate to {safe_ca}")
+
+        # Set ALL possible SSL environment variables
+        safe_ca_str = str(safe_ca)
+        os.environ["CURL_CA_BUNDLE"] = safe_ca_str
+        os.environ["REQUESTS_CA_BUNDLE"] = safe_ca_str
+        os.environ["SSL_CERT_FILE"] = safe_ca_str
+        os.environ["HTTPLIB2_CA_CERTS"] = safe_ca_str
+
+        print(f"SSL: Using certificate from {safe_ca_str}")
+
+except Exception as e:
+    print(f"SSL workaround failed: {e}")
+    print("Warning: SSL certificate verification may fail with non-ASCII paths")
+    # Continue anyway - some libraries might still work
 
 from config.settings import get_settings
 from src.monitoring.logger import setup_logging
