@@ -3,7 +3,7 @@ Configuration settings for US Stock Trading Bot
 Strict risk management enforced at all levels
 """
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, model_validator
 from typing import Optional, List
 
 
@@ -27,6 +27,24 @@ class Settings(BaseSettings):
 
     # Polygon.io Massive API
     polygon_api_key: str = Field(..., alias="POLYGON_API_KEY")
+
+    # Supabase (optional - for trade history storage)
+    # Accepts both plain names and Next.js-style NEXT_PUBLIC_* names
+    supabase_url: Optional[str] = Field(None, alias="SUPABASE_URL")
+    supabase_key: Optional[str] = Field(None, alias="SUPABASE_KEY")
+
+    # Next.js-style fallback names (populated via model_validator below)
+    next_public_supabase_url: Optional[str] = Field(None, alias="NEXT_PUBLIC_SUPABASE_URL")
+    next_public_supabase_key: Optional[str] = Field(None, alias="NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY")
+
+    @model_validator(mode="after")
+    def _resolve_supabase_credentials(self):
+        """Fall back to NEXT_PUBLIC_* names if plain names are not set"""
+        if not self.supabase_url and self.next_public_supabase_url:
+            self.supabase_url = self.next_public_supabase_url
+        if not self.supabase_key and self.next_public_supabase_key:
+            self.supabase_key = self.next_public_supabase_key
+        return self
 
     # Watchlist (Pi optimization: reduced from 15 to 8 stocks)
     watchlist: str = Field(

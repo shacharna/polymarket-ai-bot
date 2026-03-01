@@ -15,13 +15,16 @@ beautifulsoup4>=4.12.0
 polygon-api-client>=1.12.0  # Polygon.io for technical indicators
 
 # Telegram bot
-python-telegram-bot==20.7
+python-telegram-bot==21.6
 
 # Database
 sqlalchemy==2.0.25
+supabase>=2.3.0,<=2.6.0  # Supabase for trade history storage
+httpx==0.27.2           # 0.27.x satisfies both python-telegram-bot 21.x and supabase 2.6.0
 
 # Monitoring and logging
 loguru==0.7.2
+psutil>=5.9.0  # System resource monitoring for Raspberry Pi
 
 # Utilities
 schedule==1.2.0

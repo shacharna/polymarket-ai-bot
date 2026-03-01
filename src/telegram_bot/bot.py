@@ -11,6 +11,8 @@ from telegram.ext import (
 from loguru import logger
 from config.settings import get_settings
 from src.monitoring.security_logger import get_security_logger
+from src.database import get_supabase_client
+from src.database.analytics import TradeAnalytics
 from typing import Optional
 from functools import wraps
 from datetime import datetime, timedelta
@@ -69,6 +71,12 @@ class TradingTelegramBot:
         self.application: Optional[Application] = None
         self.is_running = False
 
+        # Initialize analytics (optional)
+        self.analytics = None
+        if trading_engine and trading_engine.supabase:
+            self.analytics = TradeAnalytics(trading_engine.supabase)
+            logger.info("Trade analytics enabled")
+
         # Rate limiting for DDoS protection
         self.command_history = defaultdict(list)  # {command: [timestamps]}
         self.rate_limits = {
@@ -79,6 +87,8 @@ class TradingTelegramBot:
             "status": (20, 60),     # 20 per minute
             "trades": (10, 60),     # 10 per minute
             "stats": (5, 60),       # 5 per minute
+            "analytics": (5, 60),   # 5 per minute
+            "history": (10, 60),    # 10 per minute
         }
 
         logger.info("Telegram bot initialized with auth & rate limiting")
@@ -116,7 +126,7 @@ class TradingTelegramBot:
         paper = "paper" in self.settings.alpaca_base_url
         mode = "PAPER TRADING" if paper else "LIVE TRADING"
 
-        message = f"""*Aggressive Stock Trading Bot*
+        message = f"""*US Stock Trading Bot*
 
 *Mode:* {mode}
 *Strategy:* {self.settings.trading_mode.upper()}
@@ -127,6 +137,8 @@ class TradingTelegramBot:
 /positions - Open stock positions
 /trades - Recent trade history
 /stats - Trading statistics
+/analytics - Performance analytics (30 days)
+/history - Trade history (by symbol)
 /scan - AI market scan (Yahoo Finance + web)
 /watchlist - Current watchlist + AI picks
 /strategies - Active strategies
@@ -290,6 +302,137 @@ Session P&L: ${balance.get('total_pnl', 0):+.2f}"""
             await update.message.reply_text(message, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error in stats command: {e}")
+            await update.message.reply_text(f"Error: {str(e)}")
+
+    @require_authorization
+    async def analytics_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /analytics command - show performance analytics from database"""
+        try:
+            if not self.analytics:
+                await update.message.reply_text(
+                    "📊 *Analytics Not Available*\n\n"
+                    "Trade history analytics requires Supabase configuration.\n"
+                    "Add `SUPABASE_URL` and `SUPABASE_KEY` to your `.env` file.",
+                    parse_mode="Markdown"
+                )
+                return
+
+            # Parse days parameter (default 30)
+            days = 30
+            if context.args and context.args[0].isdigit():
+                days = int(context.args[0])
+                days = min(days, 365)  # Cap at 1 year
+
+            # Get performance summary
+            summary = self.analytics.get_performance_summary(days=days)
+
+            if not summary or summary.get("total_trades", 0) == 0:
+                await update.message.reply_text(
+                    f"📊 No trade data available for the last {days} days.",
+                    parse_mode="Markdown"
+                )
+                return
+
+            # Format message
+            message = f"""📊 *Performance Analytics* (Last {days} Days)
+
+*Overall Performance*
+  Total Trades: {summary['total_trades']}
+  Winners: {summary['winning_trades']} | Losers: {summary['losing_trades']}
+  Win Rate: {summary['win_rate']}%
+  Total P&L: ${summary['total_profit_loss']:+.2f}
+  Avg Return: {summary['avg_profit_loss_pct']:+.2f}%
+  Avg Hold: {summary['avg_hold_minutes']} min
+
+*Best Trade*
+  {summary['best_trade']['symbol']}: ${summary['best_trade']['profit_loss']:+.2f} ({summary['best_trade']['profit_loss_pct']:+.2f}%)
+  Strategy: {summary['best_trade']['strategy']}
+
+*Worst Trade*
+  {summary['worst_trade']['symbol']}: ${summary['worst_trade']['profit_loss']:+.2f} ({summary['worst_trade']['profit_loss_pct']:+.2f}%)
+  Strategy: {summary['worst_trade']['strategy']}
+
+Use `/history <symbol>` for symbol-specific analytics
+Use `/analytics 7` for last 7 days, `/analytics 90` for 90 days"""
+
+            await update.message.reply_text(message, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error in analytics command: {e}")
+            await update.message.reply_text(f"Error: {str(e)}")
+
+    @require_authorization
+    async def history_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /history command - show trade history (optionally filtered by symbol)"""
+        try:
+            if not self.analytics:
+                await update.message.reply_text(
+                    "📊 *Analytics Not Available*\n\n"
+                    "Trade history requires Supabase configuration.",
+                    parse_mode="Markdown"
+                )
+                return
+
+            # Check for symbol filter
+            symbol = None
+            if context.args and len(context.args) > 0:
+                symbol = context.args[0].upper()
+
+            if symbol:
+                # Symbol-specific history
+                perf = self.analytics.get_symbol_performance(symbol)
+
+                if not perf or perf.get("total_trades", 0) == 0:
+                    await update.message.reply_text(
+                        f"📊 No trade history found for {symbol}",
+                        parse_mode="Markdown"
+                    )
+                    return
+
+                message = f"""📊 *Trade History: {symbol}*
+
+*Performance*
+  Total Trades: {perf['total_trades']}
+  Winners: {perf['winning_trades']} | Losers: {perf['losing_trades']}
+  Win Rate: {perf['win_rate']}%
+  Total P&L: ${perf['total_profit_loss']:+.2f}
+  Avg Return: {perf['avg_profit_loss_pct']:+.2f}%
+  Last Trade: {perf['last_trade_time'][:10]}"""
+
+            else:
+                # Recent trades across all symbols
+                trades = self.analytics.get_recent_trades(limit=10)
+
+                if not trades:
+                    await update.message.reply_text(
+                        "📊 No recent trades in database",
+                        parse_mode="Markdown"
+                    )
+                    return
+
+                message = "📊 *Recent Trade History* (Last 10)\n\n"
+                for trade in trades:
+                    symbol_text = trade.get("symbol", "?")
+                    side = trade.get("side", "?")
+                    entry_price = trade.get("entry_price", 0)
+                    exit_price = trade.get("exit_price")
+                    pl = trade.get("profit_loss")
+                    pl_pct = trade.get("profit_loss_pct")
+
+                    if exit_price and pl is not None:
+                        # Closed trade
+                        message += f"  {symbol_text} {side.upper()} @ ${entry_price:.2f} → ${exit_price:.2f}\n"
+                        message += f"    P&L: ${pl:+.2f} ({pl_pct:+.2f}%)\n"
+                    else:
+                        # Open position
+                        message += f"  {symbol_text} {side.upper()} @ ${entry_price:.2f} (OPEN)\n"
+
+                message += "\n\nUse `/history AAPL` for symbol-specific history"
+
+            await update.message.reply_text(message, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error in history command: {e}")
             await update.message.reply_text(f"Error: {str(e)}")
 
     @require_authorization
@@ -534,6 +677,8 @@ TP: ${trade_info.get('take_profit', 0):.2f}
                 ("positions", self.positions_command),
                 ("trades", self.trades_command),
                 ("stats", self.stats_command),
+                ("analytics", self.analytics_command),
+                ("history", self.history_command),
                 ("scan", self.scan_command),
                 ("watchlist", self.watchlist_command),
                 ("strategies", self.strategies_command),

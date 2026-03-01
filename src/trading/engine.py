@@ -16,6 +16,7 @@ from src.trading.risk_manager import RiskManager
 from src.trading.strategies import StrategyManager
 from src.trading.polygon_client import PolygonIndicatorClient
 from src.monitoring.logger import log_trade
+from src.database import get_supabase_client
 from config.settings import get_settings
 
 
@@ -41,12 +42,27 @@ class TradingEngine:
         self.polygon = PolygonIndicatorClient()
         self.strategy_manager = StrategyManager(polygon_client=self.polygon)
 
+        # Database (optional - for trade history)
+        self.supabase = None
+        if self.settings.supabase_url and self.settings.supabase_key:
+            try:
+                self.supabase = get_supabase_client(
+                    self.settings.supabase_url,
+                    self.settings.supabase_key
+                )
+                if self.supabase and self.supabase.enabled:
+                    logger.info("Trade history logging to Supabase enabled")
+            except Exception as e:
+                logger.warning(f"Supabase initialization failed: {e}")
+                self.supabase = None
+
         # State
         self.is_running = False
         self.is_paused = False
         self.trades = []  # type: List[Dict]
         self.start_time = datetime.now()
         self.max_trades_history = 100  # Pi optimization: limit memory usage
+        self.bot_version = "1.0.0"  # Track bot version for analytics
 
         logger.info(
             f"Trading Engine initialized | "
@@ -66,6 +82,13 @@ class TradingEngine:
     def stop(self):
         logger.info("Stopping trading engine...")
         self.is_running = False
+
+        # Stop Supabase client gracefully
+        if self.supabase:
+            try:
+                self.supabase.stop()
+            except Exception as e:
+                logger.error(f"Error stopping Supabase client: {e}")
 
     def pause(self):
         logger.info("Pausing trading...")
@@ -384,6 +407,41 @@ class TradingEngine:
                     size=qty * price,
                     confidence=strategy_signal.get("confidence", 0),
                 )
+
+                # Log trade to Supabase (async, non-blocking)
+                if self.supabase:
+                    try:
+                        # Get indicators for storage
+                        indicators_data = signal_data.get("snapshot", {})
+
+                        # Get AI reasoning
+                        ai_reasoning = ai_analysis.get("reasoning", "")
+                        if not ai_reasoning and signal_data.get("ai_risks"):
+                            ai_reasoning = " | ".join(signal_data.get("ai_risks", []))
+
+                        # Determine if paper trading
+                        paper_trading = "paper" in self.settings.alpaca_base_url.lower()
+
+                        # Log trade entry to database (async)
+                        self.supabase.log_trade_entry(
+                            symbol=symbol,
+                            side=side,
+                            entry_price=price,
+                            quantity=qty,
+                            position_value=qty * price,
+                            strategy=strategy_signal.get("strategy", "unknown"),
+                            confidence=strategy_signal.get("confidence", 0),
+                            ai_setup_score=signal_data.get("setup_score"),
+                            ai_risk_score=signal_data.get("risk_score"),
+                            ai_reasoning=ai_reasoning,
+                            indicators=indicators_data,
+                            paper_trading=paper_trading,
+                            alpaca_order_id=result.get("order_id"),
+                            bot_version=self.bot_version,
+                        )
+                    except Exception as e:
+                        # Don't let DB errors affect trading
+                        logger.error(f"Error logging trade to Supabase: {e}")
 
                 logger.info(
                     f"EXECUTED {action} {qty}x {symbol} @ ${price:.2f} "
