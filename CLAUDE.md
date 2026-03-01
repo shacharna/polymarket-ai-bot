@@ -163,7 +163,42 @@ This bot is designed to run 24/7 on Raspberry Pi 4 with limited resources:
    - Check SL/TP via Alpaca bracket orders
 ```
 
-### 8. **Type Hints: Python 2.7 Style Comments**
+### 8. **Supabase Database: Async Trade History Storage**
+
+The bot uses Supabase (PostgreSQL) to store trade history for analytics while keeping it as a non-critical dependency:
+
+**Architecture Pattern:**
+- **Async writes:** Trade data is queued and written in a background thread
+- **Non-blocking:** If Supabase fails, bot continues trading and logs the error
+- **Analytics only:** Database is for historical analysis, NOT for trade decisions
+
+**Database Client (`src/database/supabase_client.py`):**
+- Queue-based async writer with background thread
+- Graceful failure handling (continues trading if DB unavailable)
+- Connection pooling for efficiency
+- Automatic reconnection on network failures
+
+**Trade History Storage:**
+```
+After successful trade execution:
+  ↓
+Engine calls: supabase_client.log_trade(trade_data)
+  ↓
+Trade queued in memory (non-blocking)
+  ↓
+Background thread writes to Supabase
+  ↓
+If write fails: log error, continue trading
+```
+
+**Analytics (`src/database/analytics.py`):**
+- Query utilities for win rate, P&L trends, strategy performance
+- Aggregations by strategy, symbol, time period
+- Used by Telegram `/analytics` command
+
+**CRITICAL:** The database is for analytics only. Never query Supabase during trade execution - it would add latency and create a dependency on external service availability.
+
+### 9. **Type Hints: Python 2.7 Style Comments**
 
 All type hints use comment style for Python 2.7 compatibility:
 
@@ -242,6 +277,11 @@ src/
 │   ├── risk_manager.py  # CRITICAL: Final approval gate for all trades
 │   ├── alpaca_client.py # Broker API - order execution
 │   └── polygon_client.py # Technical indicators with caching
+│
+├── database/            # Trade history storage (non-critical dependency)
+│   ├── supabase_client.py # Async writer with queue + graceful failure
+│   ├── analytics.py     # Query utilities for performance analysis
+│   └── schema.sql       # Database schema for trades table
 │
 ├── telegram_bot/        # Remote control (external interface)
 │   └── bot.py           # Command handlers with auth + rate limiting

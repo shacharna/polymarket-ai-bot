@@ -19,6 +19,7 @@ An AI-powered autonomous stock trading bot that trades US stocks via Alpaca Mark
 - **Trailing Stops**: Locks in profits as stocks move in your favor
 - **Risk Management**: PDT rule awareness, daily loss limits, position concentration limits
 - **Telegram Remote Control**: Monitor and control the bot from your phone
+- **Trade History Analytics**: Optional Supabase integration for unlimited trade history and performance analytics
 - **Paper Trading**: Test everything risk-free with Alpaca's paper trading
 
 ## Technology Stack
@@ -29,6 +30,7 @@ An AI-powered autonomous stock trading bot that trades US stocks via Alpaca Mark
 - Polygon.io Massive API (technical indicators - RSI, SMA, MACD)
 - Yahoo Finance / yfinance (market data, news, sector performance)
 - Python Telegram Bot (remote control)
+- **Supabase** (optional - trade history analytics)
 - Pydantic Settings (configuration)
 - Loguru (logging)
 
@@ -39,6 +41,7 @@ An AI-powered autonomous stock trading bot that trades US stocks via Alpaca Mark
 - **Alpaca Markets** (free): https://alpaca.markets - Generate Paper Trading API keys
 - **OpenAI**: https://platform.openai.com - Get API key
 - **Telegram**: Create bot via @BotFather
+- **Supabase** (optional): https://supabase.com - For trade history analytics
 
 ### 2. Install
 
@@ -144,6 +147,8 @@ Every 15 minutes, the bot:
 | `/positions` | Open stock positions with P&L |
 | `/trades` | Recent trade history |
 | `/stats` | Win rate, P&L statistics |
+| `/analytics` | Performance analytics (from database) |
+| `/history` | Trade history by symbol |
 | `/scan` | Trigger AI market scan |
 | `/watchlist` | Fixed + AI-selected stocks |
 | `/strategies` | Active strategy status |
@@ -178,6 +183,8 @@ WATCHLIST=AAPL,TSLA,NVDA,MSFT,AMZN,META,GOOGL,AMD,NFLX,SPY,QQQ
 ## Documentation
 
 - [Quick Start Guide](docs/QUICKSTART.md)
+- [Supabase Setup](SUPABASE_SETUP.md) - Optional trade history analytics
+- [Security Guide](SECURITY_GUIDE.md) - Security hardening for Raspberry Pi
 - [Alpaca Setup](docs/ALPACA_SETUP.md)
 - [Trading Strategies](docs/STRATEGIES.md)
 - [Telegram Commands](docs/TELEGRAM.md)

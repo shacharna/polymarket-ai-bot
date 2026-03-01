@@ -19,9 +19,12 @@ python-telegram-bot==20.7
 
 # Database
 sqlalchemy==2.0.25
+supabase>=2.3.0,<=2.6.0  # Supabase for trade history storage
+httpx==0.25.2           # Required by python-telegram-bot 20.7; also compatible with supabase
 
 # Monitoring and logging
 loguru==0.7.2
+psutil>=5.9.0  # System resource monitoring for Raspberry Pi
 
 # Utilities
 schedule==1.2.0
