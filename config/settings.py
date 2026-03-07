@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     trailing_stop_activation: float = Field(0.03, alias="TRAILING_STOP_ACTIVATION")
     trailing_stop_distance: float = Field(0.015, alias="TRAILING_STOP_DISTANCE")
 
+    # NotebookLM Integration (optional - disabled by default)
+    notebooklm_enabled: bool = Field(False, alias="NOTEBOOKLM_ENABLED")
+    notebooklm_weight: float = Field(0.4, alias="NOTEBOOKLM_WEIGHT")
+    notebooklm_notebook_url: str = Field("", alias="NOTEBOOKLM_NOTEBOOK_URL")
+
     # System
     paper_trading: bool = Field(True, alias="PAPER_TRADING")
     log_level: str = Field("INFO", alias="LOG_LEVEL")

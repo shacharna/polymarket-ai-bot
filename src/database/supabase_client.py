@@ -283,6 +283,54 @@ class SupabaseClient:
             logger.error(f"Error updating trade exit: {e}")
             return False
 
+    def update_open_trade_exit(self, symbol, exit_price, exit_reason, profit_loss, profit_loss_pct):
+        # type: (str, float, str, float, float) -> bool
+        """
+        Update the most recent OPEN trade for a symbol with exit details.
+
+        Matches by symbol WHERE exit_time IS NULL so we don't need the exact
+        entry_time that was stored asynchronously by log_trade_entry().
+
+        Called from engine.manage_positions() when a trailing stop or bracket
+        order closes a position.
+        """
+        if not self.enabled or not self.client:
+            return False
+
+        try:
+            exit_time = datetime.utcnow().isoformat()
+
+            result = (
+                self.client.table("trades")
+                .update({
+                    "exit_price": float(exit_price),
+                    "exit_time": exit_time,
+                    "exit_reason": exit_reason,
+                    "profit_loss": float(profit_loss),
+                    "profit_loss_pct": float(profit_loss_pct),
+                })
+                .eq("symbol", symbol)
+                .is_("exit_time", "null")  # Only update open (not yet closed) trades
+                .execute()
+            )
+
+            if result and result.data:
+                logger.info(
+                    f"DB exit recorded for {symbol}: "
+                    f"{profit_loss_pct:+.2f}% (${profit_loss:+.2f}) | {exit_reason}"
+                )
+                return True
+            else:
+                logger.warning(
+                    f"No open trade found in DB for {symbol} to update exit — "
+                    f"entry may not have been logged yet"
+                )
+                return False
+
+        except Exception as e:
+            logger.error(f"Error updating trade exit for {symbol}: {e}")
+            return False
+
     def get_stats(self):
         # type: () -> Dict[str, Any]
         """Get database statistics"""

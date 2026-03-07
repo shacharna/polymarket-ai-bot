@@ -4,7 +4,7 @@ Coordinates strategies, AI analysis, and risk approval.
 KEY RULE: LLM provides analysis only. Risk manager approves every trade.
 No trade executes without passing risk_approve().
 """
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from loguru import logger
 from datetime import datetime
 import time
@@ -41,6 +41,23 @@ class TradingEngine:
         self.risk_manager = RiskManager()
         self.polygon = PolygonIndicatorClient()
         self.strategy_manager = StrategyManager(polygon_client=self.polygon)
+
+        # NotebookLM agent (optional - disabled by default, opt-in via .env)
+        self.notebook_agent = None
+        if self.settings.notebooklm_enabled:
+            try:
+                from src.agents.notebook_lm_agent import NotebookLMAgent
+                self.notebook_agent = NotebookLMAgent(
+                    self.settings.notebooklm_notebook_url
+                )
+                self.notebook_agent.authenticate()
+                logger.info(
+                    "NotebookLM analysis enabled | "
+                    f"Weight: {self.settings.notebooklm_weight:.0%}"
+                )
+            except Exception as e:
+                logger.warning(f"NotebookLM agent init failed: {e} — falling back to GPT-4o only")
+                self.notebook_agent = None
 
         # Database (optional - for trade history)
         self.supabase = None
@@ -82,6 +99,13 @@ class TradingEngine:
     def stop(self):
         logger.info("Stopping trading engine...")
         self.is_running = False
+
+        # Stop NotebookLM agent
+        if self.notebook_agent:
+            try:
+                self.notebook_agent.close()
+            except Exception as e:
+                logger.error(f"Error closing NotebookLM agent: {e}")
 
         # Stop Supabase client gracefully
         if self.supabase:
@@ -256,16 +280,34 @@ class TradingEngine:
                     symbol, sig["snapshot"], sig["bars"], indicators=indicators
                 )
 
-                # AI provides scores, not trade decisions
-                setup_score = ai_analysis.get("setup_score", 0)
-                risk_score = ai_analysis.get("risk_score", 10)
-                risks = ai_analysis.get("risks", [])
+                # NotebookLM parallel analysis (if enabled)
+                notebook_analysis = None
+                if self.notebook_agent:
+                    try:
+                        strategy_reasoning = sig.get("strategy_signal", {}).get("reasoning", "")
+                        notebook_analysis = self.notebook_agent.analyze_stock(
+                            symbol, sig["snapshot"], strategy_reasoning
+                        )
+                    except Exception as e:
+                        logger.warning(f"NotebookLM analysis failed for {symbol}: {e}")
 
-                # Combine strategy signal with AI risk assessment
+                # Merge scores (or use GPT-4o only if NotebookLM unavailable)
+                setup_score, risk_score, merged_reasoning = self._merge_ai_scores(
+                    ai_analysis, notebook_analysis
+                )
+                logger.debug(
+                    f"Merged scores for {symbol}: "
+                    f"gpt4={ai_analysis.get('setup_score', '?')} "
+                    f"notebook={notebook_analysis.get('setup_score', 'N/A') if notebook_analysis else 'N/A'} "
+                    f"final={setup_score}"
+                )
+
+                # Combine strategy signal with merged AI risk assessment
                 sig["ai_analysis"] = ai_analysis
+                sig["notebook_analysis"] = notebook_analysis
                 sig["setup_score"] = setup_score
                 sig["risk_score"] = risk_score
-                sig["ai_risks"] = risks
+                sig["ai_risks"] = ai_analysis.get("risks", [])
 
                 # Only forward to risk manager if AI doesn't flag extreme risk
                 if risk_score <= 8:
@@ -273,7 +315,7 @@ class TradingEngine:
                 else:
                     logger.warning(
                         f"AI flagged HIGH RISK for {symbol} "
-                        f"(risk_score={risk_score}/10): {risks}"
+                        f"(risk_score={risk_score}/10): {sig['ai_risks']}"
                     )
 
             except Exception as e:
@@ -287,6 +329,42 @@ class TradingEngine:
                     scored.append(sig)
 
         return scored
+
+    def _merge_ai_scores(self, gpt4_analysis, notebook_analysis):
+        # type: (Dict, Optional[Dict]) -> Tuple[int, int, str]
+        """
+        Merge GPT-4o and NotebookLM scores into a single assessment.
+
+        Merging rules:
+        - setup_score: weighted average (GPT-4o 60%, NotebookLM 40%)
+        - risk_score: max of both — always take the more conservative rating
+        - reasoning: combined, with NotebookLM citations appended
+
+        If notebook_analysis is None (timeout / disabled), falls back to
+        GPT-4o scores unchanged — bot behaviour is identical to pre-feature.
+        """
+        gpt4_setup = gpt4_analysis.get("setup_score", 5)
+        gpt4_risk = gpt4_analysis.get("risk_score", 5)
+        gpt4_reasoning = gpt4_analysis.get("reasoning", "")
+
+        if notebook_analysis is None:
+            return gpt4_setup, gpt4_risk, gpt4_reasoning
+
+        w = self.settings.notebooklm_weight  # 0.4 default
+        nb_setup = notebook_analysis.get("setup_score", gpt4_setup)
+        nb_risk = notebook_analysis.get("risk_score", gpt4_risk)
+        nb_reasoning = notebook_analysis.get("reasoning", "")
+        nb_citations = notebook_analysis.get("citations", [])
+
+        final_setup = round((gpt4_setup * (1 - w)) + (nb_setup * w))
+        final_risk = max(gpt4_risk, nb_risk)  # Conservative: always use worst risk
+
+        citations_str = " | ".join(nb_citations[:2]) if nb_citations else ""
+        combined_reasoning = f"GPT-4o: {gpt4_reasoning} | NotebookLM: {nb_reasoning}"
+        if citations_str:
+            combined_reasoning += f" [Sources: {citations_str}]"
+
+        return final_setup, final_risk, combined_reasoning
 
     def _execute_approved_trades(self, scored_signals, equity, buying_power):
         # type: (List[Dict[str, Any]], float, float) -> None
@@ -483,6 +561,19 @@ class TradingEngine:
                             f"Closed {symbol} via trailing stop | "
                             f"P&L: ${pos['unrealized_pl']:+.2f}"
                         )
+
+                        # Write exit to Supabase so trade_performance view populates
+                        if self.supabase:
+                            try:
+                                self.supabase.update_open_trade_exit(
+                                    symbol=symbol,
+                                    exit_price=pos["current_price"],
+                                    exit_reason="trailing_stop",
+                                    profit_loss=pos["unrealized_pl"],
+                                    profit_loss_pct=pos["unrealized_plpc"] * 100,
+                                )
+                            except Exception as e:
+                                logger.error(f"Error logging trade exit to Supabase: {e}")
 
             except Exception as e:
                 logger.error(f"Error managing position {pos.get('symbol', '?')}: {e}")

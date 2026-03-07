@@ -10,6 +10,10 @@ openai>=1.12.0
 
 # Market data & web scraping
 yfinance>=0.2.31
+
+# NotebookLM browser automation (optional - needed when NOTEBOOKLM_ENABLED=true)
+# After installing, run: patchright install chromium
+patchright>=0.4.0
 multitasking<0.0.12
 beautifulsoup4>=4.12.0
 polygon-api-client>=1.12.0  # Polygon.io for technical indicators
