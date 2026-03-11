@@ -80,7 +80,7 @@ class Settings(BaseSettings):
 
     # Scanning (optimized for Raspberry Pi)
     scan_interval: int = Field(120, alias="SCAN_INTERVAL")  # 2min to reduce CPU
-    confidence_threshold: int = Field(70, alias="CONFIDENCE_THRESHOLD")  # Raised from 65 to be more selective
+    confidence_threshold: int = Field(78, alias="CONFIDENCE_THRESHOLD")  # Raised from 70 to reduce marginal setups
 
     # AI role: analysis only, but can provide trade opportunities
     allow_ai_only_trades: bool = Field(True, alias="ALLOW_AI_ONLY_TRADES")
@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     market_hours_only: bool = Field(True, alias="MARKET_HOURS_ONLY")
 
     # Stop Loss / Take Profit
-    stop_loss_pct: float = Field(-3.0, alias="STOP_LOSS_PCT")  # Tighter stops
+    stop_loss_pct: float = Field(-4.5, alias="STOP_LOSS_PCT")  # Widened from -3.0 to survive normal intraday noise
     take_profit_pct: float = Field(6.0, alias="TAKE_PROFIT_PCT")  # 2:1 reward/risk
 
     # Trailing Stop

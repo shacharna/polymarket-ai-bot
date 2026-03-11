@@ -446,3 +446,43 @@ class AlpacaClient:
         except Exception as e:
             logger.error(f"Error fetching open orders: {e}")
             return []
+
+    def get_filled_orders(self, since_minutes=5) -> List[Dict[str, Any]]:
+        # type: (int,) -> List[Dict[str, Any]]
+        """Get orders filled in the last N minutes (for bracket order reconciliation)"""
+        try:
+            after_dt = datetime.utcnow() - timedelta(minutes=since_minutes)
+            orders = self.client.list_orders(
+                status="closed",
+                after=after_dt.isoformat() + "Z",
+                limit=100,
+            )
+            results = []
+            for o in orders:
+                if o.status not in ("filled", "partially_filled"):
+                    continue
+                filled_price = float(o.filled_avg_price) if o.filled_avg_price else 0.0
+                filled_at = o.filled_at.isoformat() if o.filled_at else datetime.utcnow().isoformat()
+                # Determine exit reason from order type/context
+                order_type = getattr(o, "type", "")
+                order_class = getattr(o, "order_class", "") or ""
+                if order_type == "stop" or "stop_loss" in order_class.lower():
+                    reason = "stop_loss"
+                elif order_type == "limit" or "take_profit" in order_class.lower():
+                    reason = "take_profit"
+                else:
+                    reason = "filled"
+                results.append({
+                    "order_id": o.id,
+                    "symbol": o.symbol,
+                    "side": o.side,
+                    "qty": float(o.qty),
+                    "filled_avg_price": filled_price,
+                    "filled_at": filled_at,
+                    "exit_reason": reason,
+                    "status": o.status,
+                })
+            return results
+        except Exception as e:
+            logger.error(f"Error fetching filled orders: {e}")
+            return []

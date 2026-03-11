@@ -203,7 +203,10 @@ class TradingEngine:
                 # 7. Manage existing positions
                 self.manage_positions()
 
-                # 8. Cleanup memory (important for Raspberry Pi)
+                # 8. Reconcile bracket order exits (write closed trades to DB)
+                self._reconcile_closed_positions()
+
+                # 9. Cleanup memory (important for Raspberry Pi)
                 if loop_count % 10 == 0:
                     gc.collect()
                     # Trim trade history to prevent unbounded growth
@@ -309,8 +312,8 @@ class TradingEngine:
                 sig["risk_score"] = risk_score
                 sig["ai_risks"] = ai_analysis.get("risks", [])
 
-                # Only forward to risk manager if AI doesn't flag extreme risk
-                if risk_score <= 8:
+                # Only forward to risk manager if AI doesn't flag elevated risk
+                if risk_score <= 6:
                     scored.append(sig)
                 else:
                     logger.warning(
@@ -534,6 +537,85 @@ class TradingEngine:
             logger.error(f"Error executing trade for {symbol}: {e}")
         return False
 
+    def _reconcile_closed_positions(self):
+        # type: () -> None
+        """
+        Detect bracket orders (take_profit/stop_loss) that closed on Alpaca's side
+        and write their exit data back to the DB so trade_performance view populates.
+
+        Called once per scan cycle, after manage_positions().
+        """
+        if not self.supabase:
+            return
+
+        try:
+            # Symbols currently open at Alpaca
+            open_positions = self.alpaca.get_positions()
+            open_symbols = {p["symbol"] for p in open_positions}
+
+            # In-memory trades that have no exit recorded yet
+            pending_db_update = [
+                t for t in self.trades
+                if t.get("symbol") not in open_symbols and not t.get("exit_recorded")
+            ]
+
+            if not pending_db_update:
+                return
+
+            # Fetch recently filled orders to get fill price + exit reason
+            # Use a wide window (30 min) to catch any we may have missed
+            filled_orders = self.alpaca.get_filled_orders(since_minutes=30)
+            filled_by_symbol = {}
+            for fo in filled_orders:
+                sym = fo["symbol"]
+                # Keep the most recent fill per symbol
+                if sym not in filled_by_symbol or fo["filled_at"] > filled_by_symbol[sym]["filled_at"]:
+                    filled_by_symbol[sym] = fo
+
+            for trade in pending_db_update:
+                symbol = trade["symbol"]
+                entry_price = trade.get("price", 0)
+                qty = trade.get("qty", 1)
+
+                fill = filled_by_symbol.get(symbol)
+                if fill:
+                    exit_price = fill["filled_avg_price"]
+                    exit_reason = fill["exit_reason"]
+                else:
+                    # Position closed but no recent fill found — use last known price
+                    logger.warning(
+                        f"Reconcile: {symbol} no longer open but no fill found — "
+                        f"skipping DB update this cycle"
+                    )
+                    continue
+
+                if entry_price > 0 and exit_price > 0:
+                    pnl = (exit_price - entry_price) * qty
+                    pnl_pct = (exit_price - entry_price) / entry_price * 100
+                else:
+                    pnl = 0.0
+                    pnl_pct = 0.0
+
+                ok = self.supabase.update_open_trade_exit(
+                    symbol=symbol,
+                    exit_price=exit_price,
+                    exit_reason=exit_reason,
+                    profit_loss=pnl,
+                    profit_loss_pct=pnl_pct,
+                )
+                if ok:
+                    trade["exit_recorded"] = True
+                    trade["pnl"] = pnl
+                    self.risk_manager.record_trade(pnl)
+                    logger.info(
+                        f"Reconciled {symbol} bracket exit | "
+                        f"Reason: {exit_reason} | "
+                        f"Exit: ${exit_price:.2f} | P&L: ${pnl:+.2f} ({pnl_pct:+.2f}%)"
+                    )
+
+        except Exception as e:
+            logger.error(f"Error in position reconciliation: {e}")
+
     def manage_positions(self):
         """Monitor open positions with trailing stops"""
         positions = self.alpaca.get_positions()
@@ -565,13 +647,19 @@ class TradingEngine:
                         # Write exit to Supabase so trade_performance view populates
                         if self.supabase:
                             try:
-                                self.supabase.update_open_trade_exit(
+                                ok = self.supabase.update_open_trade_exit(
                                     symbol=symbol,
                                     exit_price=pos["current_price"],
                                     exit_reason="trailing_stop",
                                     profit_loss=pos["unrealized_pl"],
                                     profit_loss_pct=pos["unrealized_plpc"] * 100,
                                 )
+                                if ok:
+                                    # Mark in-memory trade so reconciler skips it
+                                    for t in self.trades:
+                                        if t.get("symbol") == symbol and not t.get("exit_recorded"):
+                                            t["exit_recorded"] = True
+                                            break
                             except Exception as e:
                                 logger.error(f"Error logging trade exit to Supabase: {e}")
 
