@@ -35,3 +35,7 @@ schedule==1.2.0
 pytz==2024.1
 pydantic==2.5.3
 pydantic-settings==2.1.0
+
+# Web dashboard
+fastapi==0.111.0
+uvicorn==0.29.0

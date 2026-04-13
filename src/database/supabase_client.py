@@ -219,19 +219,19 @@ class SupabaseClient:
 
         # Add technical indicators if provided
         if indicators:
-            if "rsi" in indicators:
+            if indicators.get("rsi") is not None:
                 trade_data["rsi_14"] = float(indicators["rsi"])
-            if "sma_20" in indicators:
+            if indicators.get("sma_20") is not None:
                 trade_data["sma_20"] = float(indicators["sma_20"])
-            if "sma_50" in indicators:
+            if indicators.get("sma_50") is not None:
                 trade_data["sma_50"] = float(indicators["sma_50"])
-            if "macd" in indicators:
+            if indicators.get("macd") is not None:
                 trade_data["macd"] = float(indicators["macd"])
-            if "macd_signal" in indicators:
+            if indicators.get("macd_signal") is not None:
                 trade_data["macd_signal"] = float(indicators["macd_signal"])
-            if "volume_avg" in indicators:
+            if indicators.get("volume_avg") is not None:
                 trade_data["volume_avg"] = int(indicators["volume_avg"])
-            if "volume_current" in indicators:
+            if indicators.get("volume_current") is not None:
                 trade_data["volume_current"] = int(indicators["volume_current"])
 
         return self.log_trade(trade_data)

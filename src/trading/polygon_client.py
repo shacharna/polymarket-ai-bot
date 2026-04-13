@@ -109,7 +109,7 @@ class PolygonIndicatorClient:
             )
 
             self.request_count += 1
-            data = list(result) if result else []
+            data = list(result.values) if result and result.values else []
             self._set_cache(symbol, cache_key, data)
 
             logger.debug(f"Polygon API: RSI({window}) for {symbol} - {len(data)} points")
@@ -142,7 +142,7 @@ class PolygonIndicatorClient:
             )
 
             self.request_count += 1
-            data = list(result) if result else []
+            data = list(result.values) if result and result.values else []
             self._set_cache(symbol, cache_key, data)
 
             logger.debug(f"Polygon API: SMA({window}) for {symbol} - {len(data)} points")
@@ -177,7 +177,7 @@ class PolygonIndicatorClient:
             )
 
             self.request_count += 1
-            data = list(result) if result else []
+            data = list(result.values) if result and result.values else []
             self._set_cache(symbol, cache_key, data)
 
             logger.debug(f"Polygon API: MACD for {symbol} - {len(data)} points")
@@ -208,22 +208,22 @@ class PolygonIndicatorClient:
         # Fetch indicators
         rsi_data = self.get_rsi(symbol, window=14, limit=1)
         if rsi_data and len(rsi_data) > 0:
-            bundle["rsi_14"] = rsi_data[0].get("value")
+            bundle["rsi_14"] = rsi_data[0].value
 
         sma50_data = self.get_sma(symbol, window=50, limit=1)
         if sma50_data and len(sma50_data) > 0:
-            bundle["sma_50"] = sma50_data[0].get("value")
+            bundle["sma_50"] = sma50_data[0].value
 
         sma200_data = self.get_sma(symbol, window=200, limit=1)
         if sma200_data and len(sma200_data) > 0:
-            bundle["sma_200"] = sma200_data[0].get("value")
+            bundle["sma_200"] = sma200_data[0].value
 
         macd_data = self.get_macd(symbol, limit=1)
         if macd_data and len(macd_data) > 0:
             bundle["macd"] = {
-                "value": macd_data[0].get("value"),
-                "signal": macd_data[0].get("signal"),
-                "histogram": macd_data[0].get("histogram"),
+                "value": macd_data[0].value,
+                "signal": macd_data[0].signal,
+                "histogram": macd_data[0].histogram,
             }
 
         return bundle

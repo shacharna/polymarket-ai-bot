@@ -9,7 +9,6 @@ import shutil
 from pathlib import Path
 from loguru import logger
 from threading import Thread
-import asyncio
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -108,21 +107,31 @@ class StockTradingBot:
             telegram_thread.start()
             logger.info("Telegram bot started")
 
+            # Start web dashboard in separate thread
+            from src.api.server import start_dashboard_server
+            from src.database.analytics import TradeAnalytics
+            _analytics = TradeAnalytics(self.trading_engine.supabase) if self.trading_engine.supabase else None
+            _port = int(os.environ.get("DASHBOARD_PORT", "8080"))
+            Thread(
+                target=start_dashboard_server,
+                args=(self.trading_engine, _analytics, _port),
+                daemon=True,
+            ).start()
+            logger.info(f"Web dashboard: http://localhost:{_port}")
+
             # Send startup notification
             paper = "paper" in self.settings.alpaca_base_url
             mode = "PAPER" if paper else "LIVE"
             watchlist = ", ".join(self.settings.get_watchlist_symbols()[:5])
 
-            asyncio.run(
-                self.telegram_bot.send_notification(
-                    f"*Bot Started*\n\n"
-                    f"Mode: {mode} - {self.settings.trading_mode.upper()}\n"
-                    f"Watchlist: {watchlist}...\n"
-                    f"Scan Interval: {self.settings.scan_interval}s\n"
-                    f"Max Positions: {self.settings.max_concurrent_positions}\n"
-                    f"Confidence: {self.settings.confidence_threshold}%+\n\n"
-                    f"Bot is now monitoring US stock markets!"
-                )
+            self.telegram_bot.notify_sync(
+                f"*Bot Started*\n\n"
+                f"Mode: {mode} - {self.settings.trading_mode.upper()}\n"
+                f"Watchlist: {watchlist}...\n"
+                f"Scan Interval: {self.settings.scan_interval}s\n"
+                f"Max Positions: {self.settings.max_concurrent_positions}\n"
+                f"Confidence: {self.settings.confidence_threshold}%+\n\n"
+                f"Bot is now monitoring US stock markets!"
             )
 
             # Start trading engine (blocking)
@@ -145,9 +154,7 @@ class StockTradingBot:
                 self.trading_engine.stop()
             if hasattr(self, "telegram_bot"):
                 self.telegram_bot.stop()
-                asyncio.run(
-                    self.telegram_bot.send_notification("*Bot Stopped*")
-                )
+                self.telegram_bot.notify_sync("*Bot Stopped*")
             logger.info("Shutdown complete")
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")

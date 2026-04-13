@@ -312,8 +312,12 @@ class TradingEngine:
                 sig["risk_score"] = risk_score
                 sig["ai_risks"] = ai_analysis.get("risks", [])
 
+                # Store indicators in signal for DB logging later
+                sig["indicators"] = indicators
+
                 # Only forward to risk manager if AI doesn't flag elevated risk
-                if risk_score <= 6:
+                # Threshold: > 8 means reject (per architecture: AI rejects risk_score > 8)
+                if risk_score <= 8:
                     scored.append(sig)
                 else:
                     logger.warning(
@@ -492,8 +496,8 @@ class TradingEngine:
                 # Log trade to Supabase (async, non-blocking)
                 if self.supabase:
                     try:
-                        # Get indicators for storage
-                        indicators_data = signal_data.get("snapshot", {})
+                        # Get indicators for storage (fetched by _score_with_ai and stored in sig)
+                        indicators_data = signal_data.get("indicators", {})
 
                         # Get AI reasoning
                         ai_reasoning = ai_analysis.get("reasoning", "")
@@ -562,9 +566,12 @@ class TradingEngine:
             if not pending_db_update:
                 return
 
-            # Fetch recently filled orders to get fill price + exit reason
-            # Use a wide window (30 min) to catch any we may have missed
-            filled_orders = self.alpaca.get_filled_orders(since_minutes=30)
+            # Fetch recently filled orders to get fill price + exit reason.
+            # Use a full trading-day window (480 min) because Alpaca's `after`
+            # parameter filters by submitted_at, not filled_at — bracket child orders
+            # are submitted when the trade is placed, so a 30-min window misses any
+            # trade held longer than 30 minutes.
+            filled_orders = self.alpaca.get_filled_orders(since_minutes=480)
             filled_by_symbol = {}
             for fo in filled_orders:
                 sym = fo["symbol"]
@@ -590,8 +597,9 @@ class TradingEngine:
                     continue
 
                 if entry_price > 0 and exit_price > 0:
-                    pnl = (exit_price - entry_price) * qty
-                    pnl_pct = (exit_price - entry_price) / entry_price * 100
+                    direction = 1 if trade.get("action", "BUY") == "BUY" else -1
+                    pnl = (exit_price - entry_price) * qty * direction
+                    pnl_pct = (exit_price - entry_price) / entry_price * 100 * direction
                 else:
                     pnl = 0.0
                     pnl_pct = 0.0
@@ -617,7 +625,7 @@ class TradingEngine:
             logger.error(f"Error in position reconciliation: {e}")
 
     def manage_positions(self):
-        """Monitor open positions with trailing stops"""
+        """Monitor open positions with trailing stops and hard stop loss"""
         positions = self.alpaca.get_positions()
 
         for pos in positions:
@@ -625,12 +633,55 @@ class TradingEngine:
                 symbol = pos["symbol"]
                 entry_price = pos["avg_entry_price"]
                 current_price = pos["current_price"]
+                side = pos["side"]
 
+                # ── Hard stop loss (bot-side enforcement) ──────────────────────────
+                # Bracket order stop legs expire at EOD. This ensures the stop is
+                # always enforced even if the Alpaca child order no longer exists.
+                if entry_price > 0:
+                    if side == "long":
+                        price_chg_pct = (current_price - entry_price) / entry_price * 100
+                    else:
+                        price_chg_pct = (entry_price - current_price) / entry_price * 100
+
+                    sl_pct = self.settings.stop_loss_pct  # negative, e.g. -4.5
+                    if price_chg_pct <= sl_pct:
+                        logger.error(
+                            f"HARD STOP LOSS {symbol}: {price_chg_pct:.2f}% "
+                            f"(limit {sl_pct}%) — closing position"
+                        )
+                        if self.alpaca.close_position(symbol):
+                            self.risk_manager.record_trade(pos["unrealized_pl"])
+                            self.risk_manager.record_day_trade()
+                            self.risk_manager.clear_trailing_stop(symbol)
+                            logger.error(
+                                f"STOP LOSS executed {symbol} | "
+                                f"P&L: ${pos['unrealized_pl']:+.2f} ({price_chg_pct:.2f}%)"
+                            )
+                            if self.supabase:
+                                try:
+                                    ok = self.supabase.update_open_trade_exit(
+                                        symbol=symbol,
+                                        exit_price=current_price,
+                                        exit_reason="stop_loss",
+                                        profit_loss=pos["unrealized_pl"],
+                                        profit_loss_pct=pos["unrealized_plpc"] * 100,
+                                    )
+                                    if ok:
+                                        for t in self.trades:
+                                            if t.get("symbol") == symbol and not t.get("exit_recorded"):
+                                                t["exit_recorded"] = True
+                                                break
+                                except Exception as e:
+                                    logger.error(f"Error logging stop loss exit to Supabase: {e}")
+                        continue  # Skip trailing stop check for this position
+
+                # ── Trailing stop ───────────────────────────────────────────────────
                 should_trail, trail_reason = self.risk_manager.update_trailing_stop(
                     symbol=symbol,
                     entry_price=entry_price,
                     current_price=current_price,
-                    position_type=pos["side"],
+                    position_type=side,
                 )
 
                 if should_trail:

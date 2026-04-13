@@ -129,6 +129,14 @@ class StockScannerAgent:
         """Get the current AI-selected watchlist"""
         return self.dynamic_watchlist
 
+    @staticmethod
+    def _escape_md(text):
+        # type: (str) -> str
+        """Escape Telegram Markdown v1 special characters in free-text fields."""
+        for ch in ("*", "_", "`", "["):
+            text = text.replace(ch, "\\" + ch)
+        return text
+
     def get_scan_summary(self):
         # type: () -> str
         """Get a human-readable scan summary for Telegram"""
@@ -145,8 +153,8 @@ class StockScannerAgent:
             conv = pick.get("conviction", "?")
             action = pick.get("action", "?")
             symbol = pick.get("symbol", "?")
-            setup = pick.get("setup_type", "?")
-            reason = pick.get("reason", "")[:80]
+            setup = self._escape_md(str(pick.get("setup_type", "?")))
+            reason = self._escape_md(pick.get("reason", "")[:80])
             lines.append(
                 f"{i}. *{symbol}* - {action} ({setup})\n"
                 f"   Conviction: {conv}/10\n"
@@ -172,7 +180,7 @@ class StockScannerAgent:
                 if quotes:
                     for q in quotes[0].get("quotes", [])[:20]:
                         symbol = q.get("symbol", "")
-                        if symbol and "." not in symbol and len(symbol) <= 5:
+                        if symbol and symbol.isalpha() and symbol.isupper() and len(symbol) <= 5:
                             results.append({
                                 "symbol": symbol,
                                 "source": "yahoo_trending",

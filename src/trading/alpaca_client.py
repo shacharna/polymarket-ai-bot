@@ -5,7 +5,7 @@ Handles all interactions with Alpaca for US stock trading
 from typing import Dict, List, Optional, Any
 from loguru import logger
 from alpaca_trade_api import REST
-from alpaca_trade_api.rest import TimeFrame
+from alpaca_trade_api.rest import TimeFrame, TimeFrameUnit
 from config.settings import get_settings
 from datetime import datetime, timedelta
 import pytz
@@ -94,12 +94,12 @@ class AlpacaClient:
         try:
             tf_map = {
                 "1Min": TimeFrame.Minute,
-                "5Min": TimeFrame(5, "Min"),
-                "15Min": TimeFrame(15, "Min"),
+                "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+                "15Min": TimeFrame(15, TimeFrameUnit.Minute),
                 "1Hour": TimeFrame.Hour,
                 "1Day": TimeFrame.Day,
             }
-            tf = tf_map.get(timeframe, TimeFrame(15, "Min"))
+            tf = tf_map.get(timeframe, TimeFrame(15, TimeFrameUnit.Minute))
 
             end = datetime.now(pytz.UTC)
             start = end - timedelta(days=5)
@@ -270,7 +270,7 @@ class AlpacaClient:
                 qty=qty,
                 side=side.lower(),
                 type="market",
-                time_in_force="day",
+                time_in_force="gtc",
                 order_class="bracket",
                 take_profit={"limit_price": round(take_profit_price, 2)},
                 stop_loss={"stop_price": round(stop_loss_price, 2)},

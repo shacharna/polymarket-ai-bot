@@ -117,15 +117,48 @@ class MomentumStrategy(TradingStrategy):
                     "strategy_type": "momentum_long",
                 }
 
-            # Strong downward momentum (skip for now - focus on longs)
-            # Uncomment if you want short trades:
-            # if (
-            #     change_pct <= -self.min_intraday_change_pct
-            #     and volume_ratio >= self.min_volume_ratio
-            #     and price_trending == "down"
-            # ):
-            #     # Similar RSI logic for shorts (inverse thresholds)
-            #     pass
+            # Strong downward momentum short
+            if (
+                change_pct <= -self.min_intraday_change_pct
+                and volume_ratio >= self.min_volume_ratio
+                and price_trending == "down"
+            ):
+                base_confidence = min(82, 52 + int(abs(change_pct) * 5) + int(volume_ratio * 3))
+
+                # RSI filter: only short when RSI is 30-60
+                # - RSI > 60: strong downward momentum with room to fall
+                # - RSI < 30: already oversold, likely to bounce — skip
+                if rsi is not None:
+                    if rsi < 30:
+                        logger.info(
+                            f"{symbol}: RSI oversold ({rsi:.1f}), skipping momentum short"
+                        )
+                        return None
+                    elif rsi > 65:
+                        logger.info(
+                            f"{symbol}: RSI {rsi:.1f} too high for short momentum, skip"
+                        )
+                        return None
+                    elif 40 <= rsi <= 55:
+                        # Sweet spot: room to fall, confirmed downtrend
+                        base_confidence = min(92, base_confidence + 5)
+                        logger.info(f"{symbol}: RSI {rsi:.1f} - ideal short momentum zone")
+                    else:
+                        logger.info(f"{symbol}: RSI {rsi:.1f} - acceptable short range")
+                else:
+                    logger.debug(f"{symbol}: No RSI data, using price/volume only for short")
+
+                return {
+                    "action": "SELL",
+                    "confidence": base_confidence,
+                    "reasoning": (
+                        f"{symbol} momentum SHORT: {change_pct:+.1f}% intraday, "
+                        f"{volume_ratio:.1f}x avg volume, downtrend confirmed"
+                        f"{f', RSI {rsi:.1f}' if rsi else ''}"
+                    ),
+                    "position_size": 7,
+                    "strategy_type": "momentum_short",
+                }
 
             return None
         except Exception as e:
@@ -186,7 +219,7 @@ class MeanReversionStrategy(TradingStrategy):
                 rsi = self._calculate_rsi(bars, period=14)
                 logger.debug(f"{symbol}: Using calculated RSI (Polygon unavailable)")
 
-            # Oversold bounce opportunity
+            # Oversold bounce opportunity (long)
             if change_pct <= self.oversold_threshold:
                 if rsi is None:
                     logger.debug(f"{symbol}: No RSI data available, skipping")
@@ -217,6 +250,40 @@ class MeanReversionStrategy(TradingStrategy):
                     ),
                     "position_size": 7,
                     "strategy_type": "mean_reversion_long",
+                }
+
+            # Overbought reversal opportunity (short)
+            # Mirror of oversold bounce: stock up hard + RSI overbought = likely to revert down
+            overbought_threshold = abs(self.oversold_threshold)  # +3.0%
+            if change_pct >= overbought_threshold:
+                if rsi is None:
+                    logger.debug(f"{symbol}: No RSI data available, skipping overbought short")
+                    return None
+
+                if rsi < 65:
+                    logger.info(
+                        f"{symbol}: RSI {rsi:.1f} not overbought enough (need >65), skip short"
+                    )
+                    return None
+
+                base_confidence = min(78, 52 + int(change_pct * 3))
+
+                if rsi > 75:
+                    # Very overbought = higher reversal probability
+                    base_confidence = min(88, base_confidence + 10)
+                    logger.info(f"{symbol}: RSI {rsi:.1f} VERY OVERBOUGHT - strong reversal short!")
+                else:
+                    logger.info(f"{symbol}: RSI {rsi:.1f} overbought - reversal short setup")
+
+                return {
+                    "action": "SELL",
+                    "confidence": base_confidence,
+                    "reasoning": (
+                        f"{symbol} overbought reversal SHORT: {change_pct:+.1f}% up, "
+                        f"RSI={rsi:.1f} overbought, expecting pullback"
+                    ),
+                    "position_size": 6,
+                    "strategy_type": "overbought_reversal_short",
                 }
 
             return None

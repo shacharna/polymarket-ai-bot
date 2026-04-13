@@ -70,6 +70,7 @@ class TradingTelegramBot:
         self.trading_engine = trading_engine
         self.application: Optional[Application] = None
         self.is_running = False
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Initialize analytics (optional)
         self.analytics = None
@@ -657,12 +658,27 @@ TP: ${trade_info.get('take_profit', 0):.2f}
 
         await self.send_notification(message)
 
+    def notify_sync(self, message):
+        # type: (str) -> None
+        """Send notification from a non-async thread (e.g. main thread or trading engine).
+
+        Uses run_coroutine_threadsafe so the coroutine executes on the bot's own
+        event loop instead of a brand-new one, avoiding "Future attached to a
+        different loop" errors.
+        """
+        if self.loop and self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self.send_notification(message), self.loop
+            )
+        # If the loop isn't up yet (e.g. very early startup), silently skip.
+
     def start(self):
         """Start the Telegram bot"""
         try:
             # Create event loop for this thread (required on Python 3.8)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+            self.loop = loop  # Save so notify_sync() can schedule on it
 
             self.application = Application.builder().token(
                 self.settings.telegram_bot_token
